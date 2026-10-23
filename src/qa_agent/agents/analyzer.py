@@ -1,13 +1,14 @@
 from collections.abc import Awaitable, Callable
-from typing import Literal
+from typing import Any, Literal
 
 from langchain_core.language_models import BaseChatModel
 from langchain_core.messages import HumanMessage, SystemMessage
 from pydantic import BaseModel
 
+from qa_agent.config import Settings
 from qa_agent.db.log_service import LogService
 from qa_agent.graph.state import QAState
-from qa_agent.llm_logging import logged_llm_call
+from qa_agent.llm_router.model_router import ModelRouter
 from qa_agent.prompts.analyzer import ANALYZER_SYSTEM_PROMPT
 
 
@@ -24,9 +25,9 @@ def _should_retry(state: QAState, test_case_id: str) -> bool:
     return state["retry_counts"].get(test_case_id, 0) < state["max_retries"]
 
 
-def make_analyzer_node(llm: BaseChatModel, log_service: LogService) -> Callable[[QAState], Awaitable[dict]]:
-    structured_llm = llm.with_structured_output(AnalysisResponse)
-
+def make_analyzer_node(
+    router: ModelRouter, log_service: LogService, settings: Settings
+) -> Callable[[QAState], Awaitable[dict]]:
     async def analyzer_node(state: QAState) -> dict:
         result = next(r for r in state["test_results"] if r.verdict is None)
 
@@ -38,15 +39,19 @@ def make_analyzer_node(llm: BaseChatModel, log_service: LogService) -> Callable[
             f"Test case: {result.test_case_id} - {result.title}\n"
             f"Step results:\n{steps_text}"
         )
-        analysis: AnalysisResponse = await logged_llm_call(
-            lambda: structured_llm.ainvoke(
+
+        def build_call(llm: BaseChatModel) -> Callable[[], Awaitable[Any]]:
+            structured_llm = llm.with_structured_output(AnalysisResponse)
+            return lambda: structured_llm.ainvoke(
                 [SystemMessage(content=ANALYZER_SYSTEM_PROMPT), HumanMessage(content=user_message)]
-            ),
+            )
+
+        analysis: AnalysisResponse = await router.call_with_selection(
+            "analyzer",
+            build_call,
             run_id=state["run_id"],
-            node_name="analyzer",
-            provider=state["llm_provider"],
-            model=state["llm_model"],
             log_service=log_service,
+            settings=settings,
             prompt_chars=len(user_message),
         )
 
@@ -55,8 +60,8 @@ def make_analyzer_node(llm: BaseChatModel, log_service: LogService) -> Callable[
         if analysis.verdict == "flaky" and _should_retry(state, result.test_case_id):
             retry_counts = {**state["retry_counts"]}
             retry_counts[result.test_case_id] = retry_counts.get(result.test_case_id, 0) + 1
-            # Drop this result so it looks pending again -- the router will
-            # naturally send it back to the executor.
+            # Drop this result so it looks pending again -- the Coordinator
+            # will naturally send it back to the executor.
             return {"test_results": other_results, "retry_counts": retry_counts}
 
         result.verdict = analysis.verdict

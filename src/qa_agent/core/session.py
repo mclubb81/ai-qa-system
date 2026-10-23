@@ -3,12 +3,12 @@ from pathlib import Path
 
 from pydantic import BaseModel
 
-from qa_agent.agents.executor import build_executor_agent, make_executor_node
 from qa_agent.config import get_effective_settings
 from qa_agent.db.log_service import LogService
 from qa_agent.graph.build import build_graph
 from qa_agent.graph.state import Bug, QAState, TestCaseResult
-from qa_agent.llm import get_llm, resolve_llm_provider_and_model
+from qa_agent.llm import resolve_llm_provider_and_model
+from qa_agent.llm_router.model_router import ModelRouter
 from qa_agent.mcp.playwright_client import PlaywrightMCPSession
 from qa_agent.rag.service import RagService
 from qa_agent.report.writer import overall_status
@@ -43,8 +43,13 @@ async def run_qa_session(
     screenshot_dir.mkdir(parents=True, exist_ok=True)
 
     effective_settings = get_effective_settings()
+    # Used both for QAState.llm_provider/llm_model (log_run_start/CLI
+    # display) and to force the router onto this one provider for the
+    # whole run when the caller passed an explicit provider/model --
+    # otherwise each node's actual per-attempt provider/model comes from
+    # the router's candidate selection, which may fail over mid-run.
     resolved_provider, resolved_model = resolve_llm_provider_and_model(provider, model, effective_settings)
-    llm = get_llm(provider=provider, model=model, settings=effective_settings)
+    router = ModelRouter.from_settings(effective_settings, provider=provider, model=model)
     rag_service = RagService.from_settings(effective_settings)
     log_service = LogService.from_settings(effective_settings)
 
@@ -76,9 +81,7 @@ async def run_qa_session(
     run_error: str | None = None
     try:
         async with PlaywrightMCPSession(headless=headless) as session:
-            executor_agent = build_executor_agent(llm, session.tools)
-            executor_node = make_executor_node(executor_agent, log_service)
-            graph = build_graph(executor_node, llm, rag_service, log_service)
+            graph = build_graph(router, session.tools, rag_service, log_service, effective_settings)
 
             final_state = await graph.ainvoke(
                 initial_state, config={"recursion_limit": recursion_limit}

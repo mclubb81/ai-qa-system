@@ -1,7 +1,7 @@
 import base64
 from collections.abc import Awaitable, Callable
 from pathlib import Path
-from typing import Literal
+from typing import Any, Literal
 
 from langchain.agents import create_agent
 from langchain_core.language_models import BaseChatModel
@@ -10,9 +10,10 @@ from langchain_core.tools import BaseTool
 from langgraph.graph.state import CompiledStateGraph
 from pydantic import BaseModel, Field
 
+from qa_agent.config import Settings
 from qa_agent.db.log_service import LogService
 from qa_agent.graph.state import QAState, StepResult, TestCaseResult
-from qa_agent.llm_logging import logged_llm_call
+from qa_agent.llm_router.model_router import ModelRouter
 from qa_agent.prompts.executor import EXECUTOR_SYSTEM_PROMPT
 from qa_agent.utils.ids import now_iso
 
@@ -94,9 +95,17 @@ def extract_screenshots(messages: list, screenshot_dir: Path, prefix: str) -> li
 
 
 def make_executor_node(
-    executor_agent: CompiledStateGraph,
+    router: ModelRouter,
+    tools: list[BaseTool],
     log_service: LogService,
+    settings: Settings,
 ) -> Callable[[QAState], Awaitable[dict]]:
+    # Keyed by id(llm) -- stable within a run since the router already
+    # caches BaseChatModel instances per (provider, model) -- so a
+    # provider already tried this run doesn't pay create_agent's
+    # graph-compile cost again on a later test case.
+    agent_cache: dict[int, CompiledStateGraph] = {}
+
     async def executor_node(state: QAState) -> dict:
         executed_ids = {r.test_case_id for r in state["test_results"]}
         test_case = next(tc for tc in state["test_plan"] if tc.id not in executed_ids)
@@ -109,16 +118,22 @@ def make_executor_node(
         )
 
         started_at = now_iso()
-        result = await logged_llm_call(
-            lambda: executor_agent.ainvoke(
+
+        def build_call(llm: BaseChatModel) -> Callable[[], Awaitable[Any]]:
+            if id(llm) not in agent_cache:
+                agent_cache[id(llm)] = build_executor_agent(llm, tools)
+            executor_agent = agent_cache[id(llm)]
+            return lambda: executor_agent.ainvoke(
                 {"messages": [HumanMessage(content=user_message)]},
                 config={"recursion_limit": 50},
-            ),
+            )
+
+        result = await router.call_with_selection(
+            "executor",
+            build_call,
             run_id=state["run_id"],
-            node_name="executor",
-            provider=state["llm_provider"],
-            model=state["llm_model"],
             log_service=log_service,
+            settings=settings,
             prompt_chars=len(user_message),
         )
         messages = result["messages"]

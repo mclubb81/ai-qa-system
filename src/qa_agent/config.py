@@ -1,5 +1,6 @@
 from functools import lru_cache
 
+from pydantic import Field
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
@@ -38,6 +39,60 @@ class Settings(BaseSettings):
     # DB, since you need them to find it).
     qa_logs_database_url: str | None = None
     qa_config_database_url: str | None = None
+
+    # Cost/rate controls, keyed by "<provider>:chat" or "<provider>:embedding"
+    # so e.g. Google's chat and embedding endpoints can have different caps.
+    # A scope absent from this map has no cap. These defaults are
+    # placeholders pulled from each provider's public free-tier docs at
+    # write time -- providers change these without notice, which is exactly
+    # why the real values belong in the qa_config DB (override the whole
+    # map with `qa-agent config set provider_limits '{...}'`), not in code.
+    # The mechanism itself isn't free-tier-specific: it's just as useful as
+    # a cost cap on a paid plan.
+    provider_limits: dict[str, dict[str, int]] = Field(
+        default_factory=lambda: {
+            "groq:chat": {"rpm": 30, "rpd": 1000, "max_output_tokens": 1024},
+            "google:chat": {"rpm": 15, "rpd": 1500, "max_output_tokens": 1024},
+            "anthropic:chat": {"rpm": 50, "rpd": 1000, "max_output_tokens": 1024},
+            "openai:chat": {"rpm": 60, "rpd": 1000, "max_output_tokens": 1024},
+            "google:embedding": {"rpm": 100, "rpd": 1500},
+        }
+    )
+
+    # Model selection: task-complexity baseline / opt-in candidate lists.
+    # Empty dict -> every node falls back to [llm_provider], i.e. today's
+    # single-global-provider behavior exactly. Keys are node names
+    # ("planner", "analyzer", "triage", "executor"); values are ordered
+    # provider-name lists -- most-preferred first, which also serves as
+    # the tie-break prior when Loop B (below) has no learned preference.
+    node_candidate_providers: dict[str, list[str]] = Field(default_factory=dict)
+
+    # Loop B (model-selection cost/latency weighting): an approximate,
+    # admittedly-not-real-dollars relative cost weight per provider, since
+    # no actual per-token pricing is tracked anywhere in this codebase.
+    # A provider absent from this map gets a neutral weight of 1.0.
+    provider_cost_weights: dict[str, float] = Field(default_factory=dict)
+
+    # PID tuning knobs for both adaptive-control loops, externalized like
+    # provider_limits since "tuning" implies an operator adjusts these
+    # without a code change. Missing keys fall back to in-code defaults.
+    loop_a_pid_gains: dict[str, float] = Field(default_factory=dict)
+    loop_b_pid_gains: dict[str, float] = Field(default_factory=dict)
+
+    # Loop A (adaptive rate limiting) specifics -- see rate_limiter.py.
+    loop_a_target_error_rate: float = 0.05
+    loop_a_min_multiplier: float = 0.1
+    loop_a_error_rate_ewma_alpha: float = 0.3
+
+    # Model-selection failover: how many consecutive native rate-limit
+    # errors from one provider before giving up on it for the rest of
+    # this run (a provider merely being throttled might recover, so this
+    # is a coarser give-up signal than Loop A's continuous throttling).
+    failover_rate_limit_threshold: int = 3
+
+    # Loop B specifics -- see llm_router/cost_latency.py.
+    loop_b_failure_penalty_ms: float = 60_000.0
+    loop_b_max_dt_seconds: float = 3600.0
 
     model_config = SettingsConfigDict(env_file=".env", extra="ignore")
 

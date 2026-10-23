@@ -4,7 +4,8 @@ from qa_agent.db.log_service import LogService
 from qa_agent.graph.state import StepResult, TestCaseResult
 from qa_agent.rag.models import SimilarBug
 
-_DISABLED_LOG_SERVICE = LogService(None, Settings())
+_SETTINGS = Settings()
+_DISABLED_LOG_SERVICE = LogService(None, _SETTINGS)
 
 
 class _StubStructuredLLM:
@@ -25,6 +26,18 @@ class _StubLLM:
     def with_structured_output(self, schema):
         self.structured_llm = _StubStructuredLLM(self._response)
         return self.structured_llm
+
+
+class _StubModelRouter:
+    """Single-candidate, no-failover fake: just runs build_call against
+    the given stub LLM, bypassing routing/PID/failover machinery entirely
+    so these tests still verify node behavior given one canned response."""
+
+    def __init__(self, llm):
+        self._llm = llm
+
+    async def call_with_selection(self, node_name, build_call, **kwargs):
+        return await build_call(self._llm)()
 
 
 class _StubRagService:
@@ -64,7 +77,7 @@ async def test_triage_node_sets_similar_bug_refs_from_rag_results():
         SimilarBug(id="BUG-SEED-001", title="Banner missing", description="...", severity="medium", score=0.8)
     ]
     stub_llm = _StubLLM(_canned_triage())
-    node = make_triage_node(stub_llm, _StubRagService(similar), _DISABLED_LOG_SERVICE)
+    node = make_triage_node(_StubModelRouter(stub_llm), _StubRagService(similar), _DISABLED_LOG_SERVICE, _SETTINGS)
 
     state = {
         "run_id": "test-run",
@@ -84,7 +97,7 @@ async def test_triage_node_sets_similar_bug_refs_from_rag_results():
 
 async def test_triage_node_reports_none_found_when_no_similar_bugs():
     stub_llm = _StubLLM(_canned_triage())
-    node = make_triage_node(stub_llm, _StubRagService([]), _DISABLED_LOG_SERVICE)
+    node = make_triage_node(_StubModelRouter(stub_llm), _StubRagService([]), _DISABLED_LOG_SERVICE, _SETTINGS)
 
     state = {
         "run_id": "test-run",

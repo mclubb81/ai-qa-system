@@ -3,17 +3,20 @@ import traceback
 from collections.abc import Awaitable, Callable
 from pathlib import Path
 
-from langchain_core.language_models import BaseChatModel
+from langchain_core.tools import BaseTool
 from langgraph.graph import END, StateGraph
 from langgraph.graph.state import CompiledStateGraph
 
 from qa_agent.agents.analyzer import make_analyzer_node
+from qa_agent.agents.executor import make_executor_node
 from qa_agent.agents.planner import make_planner_node
 from qa_agent.agents.retriever import make_retriever_node
 from qa_agent.agents.triage import make_triage_node
+from qa_agent.config import Settings
 from qa_agent.db.log_service import LogService
 from qa_agent.graph.router import route
 from qa_agent.graph.state import NodeName, QAState
+from qa_agent.llm_router.model_router import ModelRouter
 from qa_agent.rag.service import RagService
 from qa_agent.report.writer import write_report
 from qa_agent.utils.ids import now_iso
@@ -61,13 +64,20 @@ def _with_node_logging(
 
 
 def build_graph(
-    executor_node, llm: BaseChatModel, rag_service: RagService, log_service: LogService
+    router: ModelRouter,
+    tools: list[BaseTool],
+    rag_service: RagService,
+    log_service: LogService,
+    settings: Settings,
 ) -> CompiledStateGraph:
     """Wire the Coordinator-routed graph.
 
-    `executor_node` is passed in already built (it closes over the
-    executor ReAct agent, which itself closes over the live Playwright MCP
-    tools) -- everything else is built here from the shared llm.
+    `router` (a ModelRouter) owns provider/model selection -- including
+    failover and cost/latency-based ranking -- so every LLM-calling node
+    (including executor) is built from it here, rather than from one
+    shared `llm` instance. `tools` are the live Playwright MCP tools,
+    passed through to the executor node, which builds its ReAct agent
+    fresh per candidate provider attempt (see agents/executor.py).
 
     `rag_service` is always a real `RagService` instance, never None --
     when RAG isn't configured it just returns empty results, so the
@@ -76,11 +86,25 @@ def build_graph(
     """
     graph = StateGraph(QAState)
     graph.add_node("retriever", _with_node_logging("retriever", make_retriever_node(rag_service), log_service))
-    graph.add_node("planner", _with_node_logging("planner", make_planner_node(llm, log_service), log_service))
-    graph.add_node("executor", _with_node_logging("executor", executor_node, log_service))
-    graph.add_node("analyzer", _with_node_logging("analyzer", make_analyzer_node(llm, log_service), log_service))
     graph.add_node(
-        "triage", _with_node_logging("triage", make_triage_node(llm, rag_service, log_service), log_service)
+        "planner",
+        _with_node_logging("planner", make_planner_node(router, log_service, settings), log_service),
+    )
+    graph.add_node(
+        "executor",
+        _with_node_logging(
+            "executor", make_executor_node(router, tools, log_service, settings), log_service
+        ),
+    )
+    graph.add_node(
+        "analyzer",
+        _with_node_logging("analyzer", make_analyzer_node(router, log_service, settings), log_service),
+    )
+    graph.add_node(
+        "triage",
+        _with_node_logging(
+            "triage", make_triage_node(router, rag_service, log_service, settings), log_service
+        ),
     )
     graph.add_node("report", _with_node_logging("report", _make_report_node(), log_service))
 

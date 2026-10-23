@@ -7,6 +7,12 @@ from qa_agent.config import Settings, get_effective_settings
 from qa_agent.rag.client import get_qdrant_client
 from qa_agent.rag.embeddings import get_embeddings
 from qa_agent.rag.models import RetrievedDoc, SimilarBug
+from qa_agent.rate_limiter import enforce_limit_async, enforce_limit_sync
+
+# Embeddings are hardcoded to Google regardless of llm_provider (see
+# rag/embeddings.py), so the limiter scope is fixed here too -- update this
+# to f"{provider}:embedding" if embeddings ever become provider-selectable.
+_EMBEDDING_SCOPE = "google:embedding"
 
 if TYPE_CHECKING:
     from langchain_core.embeddings import Embeddings
@@ -50,6 +56,10 @@ class RagService:
         if self._client is None or self._embeddings is None:
             return []
         top_k = top_k or self._settings.rag_docs_top_k
+        # Deliberately outside the try/except below: a DailyQuotaExceededError
+        # is a policy decision, not a RAG infra failure, so it should
+        # propagate rather than be swallowed as "continuing without context".
+        await enforce_limit_async(_EMBEDDING_SCOPE, self._settings)
         try:
             vector = await self._embeddings.aembed_query(query)
             response = await asyncio.to_thread(
@@ -75,6 +85,7 @@ class RagService:
         if self._client is None or self._embeddings is None:
             return []
         top_k = top_k or self._settings.rag_bugs_top_k
+        await enforce_limit_async(_EMBEDDING_SCOPE, self._settings)
         try:
             vector = await self._embeddings.aembed_query(query)
             response = await asyncio.to_thread(
@@ -110,6 +121,7 @@ class RagService:
 
         from qdrant_client.models import PointStruct
 
+        enforce_limit_sync(_EMBEDDING_SCOPE, self._settings)
         vectors = self._embeddings.embed_documents([text for text, _ in chunks])
         points = [
             PointStruct(id=str(uuid4()), vector=vector, payload={"text": text, "source": source})
@@ -131,6 +143,7 @@ class RagService:
         from qdrant_client.models import PointStruct
 
         texts = [f"{bug['title']}\n{bug['description']}" for bug in bugs]
+        enforce_limit_sync(_EMBEDDING_SCOPE, self._settings)
         vectors = self._embeddings.embed_documents(texts)
         points = [
             PointStruct(
