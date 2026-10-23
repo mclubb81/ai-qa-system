@@ -12,6 +12,7 @@ def _base_state(**overrides) -> QAState:
         "screenshot_dir": "/tmp/does-not-matter",
         "max_retries": 1,
         "retry_counts": {},
+        "retrieved_docs": [],
         "test_plan": None,
         "test_results": [],
         "bugs": [],
@@ -32,8 +33,13 @@ def _passed_step() -> StepResult:
     return StepResult(description="Navigate", status="pass")
 
 
+def test_routes_to_retriever_when_docs_not_retrieved():
+    state = _base_state(retrieved_docs=None, test_plan=None)
+    assert route(state) == "retriever"
+
+
 def test_routes_to_planner_when_no_plan():
-    state = _base_state(test_plan=None)
+    state = _base_state(retrieved_docs=[], test_plan=None)
     assert route(state) == "planner"
 
 

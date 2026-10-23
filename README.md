@@ -20,6 +20,9 @@ Markdown + JSON report.
 - **Analyzer** -- judges each executed test case pass/fail/flaky, with a deterministic
   threshold-based retry for "flaky" verdicts.
 - **Bug Triage** -- turns suspected-bug results into structured, GitHub-issue-ready bug reports.
+- **Retriever** (optional RAG) -- runs once before the Planner. When Qdrant/RAG is configured, it
+  retrieves relevant indexed product docs for the Planner to ground test cases in; it degrades
+  silently (returns no context) when RAG isn't configured.
 
 The core orchestration lives behind a single library entrypoint, `run_qa_session(...)`
 (`core/session.py`), so the CLI is a thin wrapper and a future API/UI layer can call it directly.
@@ -61,6 +64,31 @@ qa-agent run --url https://myapp.com --requirements ./examples/requirements_exam
 
 Each run writes `reports/<run-id>/report.md`, `report.json`, and any captured screenshots under
 `reports/<run-id>/screenshots/`.
+
+## RAG (optional)
+
+The Planner can be grounded in retrieved product docs, and Bug Triage can look up similar
+previously-known bugs, via [Qdrant](https://qdrant.tech/) + Google's free `text-embedding-004`
+embeddings. This is entirely optional -- leave the `.env` RAG fields blank and `qa-agent` runs
+exactly as without it.
+
+```bash
+pip install -e ".[rag]"
+```
+
+1. Create a free [Qdrant Cloud](https://cloud.qdrant.io) cluster and grab its URL + API key.
+2. In `.env`, set `QDRANT_URL`, `QDRANT_API_KEY`, and `GOOGLE_API_KEY` (same free key as the
+   `google` LLM provider above -- get one at https://aistudio.google.com/apikey).
+3. Seed the knowledge base:
+
+```bash
+qa-agent ingest-docs ./docs --chunk-size 1000 --chunk-overlap 100
+qa-agent ingest-bugs ./known_bugs.json
+```
+
+`ingest-docs` indexes `.md`/`.txt` files (one file or a directory) into the `qa_docs` collection.
+`ingest-bugs` indexes a JSON file -- a list of `{id?, title, description, severity?}` records --
+into the `qa_bugs` collection.
 
 ## Development
 

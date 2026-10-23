@@ -7,6 +7,7 @@ from pydantic import BaseModel
 
 from qa_agent.graph.state import Bug, QAState
 from qa_agent.prompts.triage import TRIAGE_SYSTEM_PROMPT
+from qa_agent.rag.service import RagService
 
 
 class TriageResponse(BaseModel):
@@ -18,7 +19,7 @@ class TriageResponse(BaseModel):
     suspected_root_cause: str
 
 
-def make_triage_node(llm: BaseChatModel) -> Callable[[QAState], Awaitable[dict]]:
+def make_triage_node(llm: BaseChatModel, rag_service: RagService) -> Callable[[QAState], Awaitable[dict]]:
     structured_llm = llm.with_structured_output(TriageResponse)
 
     async def triage_node(state: QAState) -> dict:
@@ -31,10 +32,20 @@ def make_triage_node(llm: BaseChatModel) -> Callable[[QAState], Awaitable[dict]]
             f"- [{step.status}] {step.description}" + (f" (error: {step.error})" if step.error else "")
             for step in result.steps
         )
+
+        similar_bugs = await rag_service.find_similar_bugs(f"{result.title}\n{result.reasoning}")
+        similar_block = (
+            "\n\nSimilar previously known bugs:\n"
+            + "\n".join(f"- [{b.severity}] {b.title}: {b.description}" for b in similar_bugs)
+            if similar_bugs
+            else "\n\nSimilar previously known bugs: none found."
+        )
+
         user_message = (
             f"Test case: {result.test_case_id} - {result.title}\n"
             f"Analyzer reasoning: {result.reasoning}\n"
             f"Step results:\n{steps_text}"
+            f"{similar_block}"
         )
         triage: TriageResponse = await structured_llm.ainvoke(
             [SystemMessage(content=TRIAGE_SYSTEM_PROMPT), HumanMessage(content=user_message)]
@@ -51,6 +62,7 @@ def make_triage_node(llm: BaseChatModel) -> Callable[[QAState], Awaitable[dict]]
             actual=triage.actual,
             suspected_root_cause=triage.suspected_root_cause,
             screenshot_refs=screenshot_refs,
+            similar_bug_refs=[b.id for b in similar_bugs],
         )
         return {"bugs": [*state["bugs"], bug]}
 

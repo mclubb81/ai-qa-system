@@ -4,11 +4,16 @@ from qa_agent.graph.state import NodeName, QAState
 def route(state: QAState) -> NodeName:
     """The Coordinator: a pure, deterministic function of state.
 
-    Decides which agent runs next based purely on the shapes of test_plan /
-    test_results / bugs -- there is no separate "status" field to keep in
-    sync. This is wired in as the conditional-edge function from every
-    worker node, and as the conditional entry point.
+    Decides which agent runs next based purely on the shapes of
+    retrieved_docs / test_plan / test_results / bugs -- there is no
+    separate "status" field to keep in sync. This is wired in as the
+    conditional-edge function from every worker node, and as the
+    conditional entry point. retrieved_docs is checked first and only
+    ever `None` once, at the very start of a run.
     """
+    if state["retrieved_docs"] is None:
+        return "retriever"
+
     if state["test_plan"] is None:
         return "planner"
 

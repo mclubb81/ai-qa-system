@@ -2,6 +2,8 @@ from typing import Literal, TypedDict
 
 from pydantic import BaseModel, Field
 
+from qa_agent.rag.models import RetrievedDoc
+
 
 class TestCase(BaseModel):
     id: str
@@ -40,6 +42,7 @@ class Bug(BaseModel):
     actual: str
     suspected_root_cause: str
     screenshot_refs: list[str] = Field(default_factory=list)
+    similar_bug_refs: list[str] = Field(default_factory=list)
 
 
 class QAState(TypedDict):
@@ -54,6 +57,7 @@ class QAState(TypedDict):
     max_retries: int
     retry_counts: dict[str, int]
 
+    retrieved_docs: list[RetrievedDoc] | None
     test_plan: list[TestCase] | None
     test_results: list[TestCaseResult]
     bugs: list[Bug]
@@ -64,4 +68,4 @@ class QAState(TypedDict):
     report_json_path: str | None
 
 
-NodeName = Literal["planner", "executor", "analyzer", "triage", "report"]
+NodeName = Literal["retriever", "planner", "executor", "analyzer", "triage", "report"]

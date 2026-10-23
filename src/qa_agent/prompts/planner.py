@@ -22,4 +22,10 @@ Cover the explicit requirements first, then add a small number of \
 reasonable common-sense checks (e.g. "the page loads without a visible \
 error") if the requirements are thin. Do not invent test cases unrelated \
 to the stated requirements or the target page's evident purpose.
+
+You may also be given excerpts of relevant product documentation \
+retrieved from a knowledge base. Use them to ground test cases in \
+actual documented behavior where they're relevant, but the stated \
+requirements take priority, and the absence of retrieved documentation \
+should not block you from generating a sensible plan.
 """

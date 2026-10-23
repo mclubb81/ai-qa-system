@@ -18,9 +18,17 @@ def make_planner_node(
     structured_llm = llm.with_structured_output(TestPlanResponse)
 
     async def planner_node(state: QAState) -> dict:
+        docs = state.get("retrieved_docs") or []
+        docs_block = (
+            "\n\nRelevant product documentation (retrieved):\n"
+            + "\n".join(f"- [{doc.source}] {doc.text}" for doc in docs)
+            if docs
+            else ""
+        )
         user_message = (
             f"Target URL: {state['target_url']}\n\n"
             f"Requirements:\n{state['requirements_raw']}"
+            f"{docs_block}"
         )
         response: TestPlanResponse = await structured_llm.ainvoke(
             [SystemMessage(content=PLANNER_SYSTEM_PROMPT), HumanMessage(content=user_message)]

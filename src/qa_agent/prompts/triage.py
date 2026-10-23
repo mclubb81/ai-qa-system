@@ -18,4 +18,8 @@ clearly framed as a hypothesis (you cannot see the application's source \
 code)
 - screenshot_refs: carry over any screenshot paths from the failing \
 step(s) verbatim
+
+You may also be given a list of similar previously known bugs retrieved \
+from a knowledge base. If the current defect looks like a duplicate or \
+recurrence of one of them, say so explicitly in suspected_root_cause.
 """
