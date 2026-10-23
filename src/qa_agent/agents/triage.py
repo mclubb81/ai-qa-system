@@ -5,7 +5,9 @@ from langchain_core.language_models import BaseChatModel
 from langchain_core.messages import HumanMessage, SystemMessage
 from pydantic import BaseModel
 
+from qa_agent.db.log_service import LogService
 from qa_agent.graph.state import Bug, QAState
+from qa_agent.llm_logging import logged_llm_call
 from qa_agent.prompts.triage import TRIAGE_SYSTEM_PROMPT
 from qa_agent.rag.service import RagService
 
@@ -19,7 +21,9 @@ class TriageResponse(BaseModel):
     suspected_root_cause: str
 
 
-def make_triage_node(llm: BaseChatModel, rag_service: RagService) -> Callable[[QAState], Awaitable[dict]]:
+def make_triage_node(
+    llm: BaseChatModel, rag_service: RagService, log_service: LogService
+) -> Callable[[QAState], Awaitable[dict]]:
     structured_llm = llm.with_structured_output(TriageResponse)
 
     async def triage_node(state: QAState) -> dict:
@@ -47,8 +51,16 @@ def make_triage_node(llm: BaseChatModel, rag_service: RagService) -> Callable[[Q
             f"Step results:\n{steps_text}"
             f"{similar_block}"
         )
-        triage: TriageResponse = await structured_llm.ainvoke(
-            [SystemMessage(content=TRIAGE_SYSTEM_PROMPT), HumanMessage(content=user_message)]
+        triage: TriageResponse = await logged_llm_call(
+            lambda: structured_llm.ainvoke(
+                [SystemMessage(content=TRIAGE_SYSTEM_PROMPT), HumanMessage(content=user_message)]
+            ),
+            run_id=state["run_id"],
+            node_name="triage",
+            provider=state["llm_provider"],
+            model=state["llm_model"],
+            log_service=log_service,
+            prompt_chars=len(user_message),
         )
 
         screenshot_refs = [step.screenshot_path for step in result.steps if step.screenshot_path]

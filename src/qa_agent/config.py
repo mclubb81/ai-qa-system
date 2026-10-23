@@ -34,6 +34,11 @@ class Settings(BaseSettings):
     rag_docs_top_k: int = 5
     rag_bugs_top_k: int = 3
 
+    # Postgres (bootstrap-only -- these can't themselves live in the config
+    # DB, since you need them to find it).
+    qa_logs_database_url: str | None = None
+    qa_config_database_url: str | None = None
+
     model_config = SettingsConfigDict(env_file=".env", extra="ignore")
 
     @property
@@ -44,3 +49,23 @@ class Settings(BaseSettings):
 @lru_cache
 def get_settings() -> Settings:
     return Settings()
+
+
+def get_effective_settings(settings: Settings | None = None) -> Settings:
+    """Overlay qa_config DB values (if reachable) onto the `.env` bootstrap
+    Settings. Falls back to the bootstrap Settings unchanged if the config
+    DB is unconfigured/unreachable -- same graceful-degradation contract as
+    RagService.enabled. Deliberately uncached: a `config set` must be
+    visible on the next call, not frozen behind a stale singleton.
+
+    Note: only keys that match an existing Settings field name actually
+    take effect -- model_copy(update=...) will still accept other keys
+    (pydantic doesn't validate against the schema here), but they won't
+    influence any field lookup elsewhere in the app.
+    """
+    from qa_agent.db.config_service import ConfigService  # local import: avoids a
+                                                            # config.py <-> db cycle
+
+    base = settings or get_settings()
+    overrides = ConfigService.from_settings(base).get_all()
+    return base.model_copy(update=overrides) if overrides else base

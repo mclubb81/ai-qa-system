@@ -3,7 +3,7 @@ import logging
 from typing import TYPE_CHECKING
 from uuid import uuid4
 
-from qa_agent.config import Settings, get_settings
+from qa_agent.config import Settings, get_effective_settings
 from qa_agent.rag.client import get_qdrant_client
 from qa_agent.rag.embeddings import get_embeddings
 from qa_agent.rag.models import RetrievedDoc, SimilarBug
@@ -43,7 +43,7 @@ class RagService:
 
     @classmethod
     def from_settings(cls, settings: Settings | None = None) -> "RagService":
-        settings = settings or get_settings()
+        settings = settings or get_effective_settings()
         return cls(get_qdrant_client(settings), get_embeddings(settings), settings)
 
     async def retrieve_docs(self, query: str, top_k: int | None = None) -> list[RetrievedDoc]:

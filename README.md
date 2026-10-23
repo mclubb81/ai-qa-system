@@ -23,6 +23,9 @@ Markdown + JSON report.
 - **Retriever** (optional RAG) -- runs once before the Planner. When Qdrant/RAG is configured, it
   retrieves relevant indexed product docs for the Planner to ground test cases in; it degrades
   silently (returns no context) when RAG isn't configured.
+- **Logging** (optional, Postgres) -- every node is wrapped to record its own duration and any
+  escaping error; every LLM call is timed and sized. Writes are always best-effort -- a logging DB
+  outage never crashes or blocks a live run.
 
 The core orchestration lives behind a single library entrypoint, `run_qa_session(...)`
 (`core/session.py`), so the CLI is a thin wrapper and a future API/UI layer can call it directly.
@@ -89,6 +92,32 @@ qa-agent ingest-bugs ./known_bugs.json
 `ingest-docs` indexes `.md`/`.txt` files (one file or a directory) into the `qa_docs` collection.
 `ingest-bugs` indexes a JSON file -- a list of `{id?, title, description, severity?}` records --
 into the `qa_bugs` collection.
+
+## Logging + config (optional, Postgres)
+
+Every run can log structured history -- run outcomes, per-node transitions with duration,
+per-LLM-call timing/size, and errors with stack traces -- to Postgres, and settings can be
+managed from a second Postgres database instead of only `.env`. Both are entirely optional --
+leave the `.env` Postgres fields blank and `qa-agent` behaves exactly as without them.
+
+```bash
+pip install -e ".[db]"
+docker compose up -d   # starts one local Postgres with both qa_logs and qa_config created
+```
+
+In `.env`, set `QA_LOGS_DATABASE_URL` and `QA_CONFIG_DATABASE_URL` (the `docker-compose.yml`
+defaults match `.env.example`'s placeholders). Schema is created automatically on first use --
+`qa-agent db-init` is available if you want to set it up explicitly instead.
+
+```bash
+qa-agent config set max_retries 3       # overrides MAX_RETRIES from .env once the config DB is reachable
+qa-agent config get max_retries
+qa-agent config list
+```
+
+Config keys must match a `Settings` field name (e.g. `llm_provider`, `max_retries`,
+`playwright_headless`, `rag_docs_top_k`) to take effect -- values are stored as JSON, so
+`qa-agent config set playwright_headless false` stores a real boolean, not the string `"false"`.
 
 ## Development
 

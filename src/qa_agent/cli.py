@@ -1,12 +1,16 @@
 import asyncio
+import json
 from pathlib import Path
 
 import typer
 from rich.console import Console
 from rich.table import Table
 
-from qa_agent.config import get_settings
+from qa_agent.config import get_effective_settings, get_settings
 from qa_agent.core.session import RunResult, run_qa_session
+from qa_agent.db.client import get_config_dsn, get_logs_pool, get_sync_connection
+from qa_agent.db.config_service import ConfigService
+from qa_agent.db.schema import ensure_config_schema, ensure_logs_schema
 from qa_agent.rag.client import get_qdrant_client
 from qa_agent.rag.collections import ensure_collection
 from qa_agent.rag.ingest import load_bug_records, load_doc_chunks
@@ -14,6 +18,9 @@ from qa_agent.rag.service import RagService
 
 app = typer.Typer(add_completion=False)
 console = Console()
+
+config_app = typer.Typer(add_completion=False)
+app.add_typer(config_app, name="config")
 
 
 @app.callback()
@@ -61,13 +68,27 @@ def run(
         None, "--provider", help="LLM provider: groq (default), google, anthropic, or openai."
     ),
     model: str | None = typer.Option(None, "--model", help="Override the provider's default model."),
-    headless: bool = typer.Option(True, "--headless/--no-headless", help="Run the browser headless."),
-    max_retries: int = typer.Option(1, "--max-retries", help="Retries for test cases judged 'flaky'."),
-    reports_dir: Path = typer.Option(Path("reports"), "--reports-dir", help="Directory to write reports into."),
+    headless: bool | None = typer.Option(
+        None, "--headless/--no-headless", help="Run the browser headless (default: from config/settings)."
+    ),
+    max_retries: int | None = typer.Option(
+        None, "--max-retries", help="Retries for test cases judged 'flaky' (default: from config/settings)."
+    ),
+    reports_dir: Path | None = typer.Option(
+        None, "--reports-dir", help="Directory to write reports into (default: from config/settings)."
+    ),
     verbose: bool = typer.Option(False, "-v", "--verbose", help="Verbose output."),
 ) -> None:
     """Run an AI-powered QA session against a target URL."""
     req_text = _load_requirements(requirements)
+
+    # CLI flags win when explicitly passed; otherwise fall back to the
+    # config DB (if reachable) or .env/hardcoded defaults -- same
+    # precedence as provider/model already had.
+    settings = get_effective_settings()
+    effective_headless = headless if headless is not None else settings.playwright_headless
+    effective_max_retries = max_retries if max_retries is not None else settings.max_retries
+    effective_reports_dir = reports_dir if reports_dir is not None else Path(settings.reports_dir)
 
     if verbose:
         console.print(f"[dim]Target: {url}[/dim]")
@@ -79,9 +100,9 @@ def run(
             requirements=req_text,
             provider=provider,
             model=model,
-            headless=headless,
-            max_retries=max_retries,
-            reports_dir=reports_dir,
+            headless=effective_headless,
+            max_retries=effective_max_retries,
+            reports_dir=effective_reports_dir,
         )
     )
     _print_summary(result)
@@ -95,14 +116,14 @@ def ingest_docs(
     chunk_overlap: int = typer.Option(100, "--chunk-overlap", help="Overlap between consecutive chunks."),
 ) -> None:
     """Ingest product docs into the qa_docs Qdrant collection for the Planner to retrieve from."""
-    rag_service = RagService.from_settings()
+    settings = get_effective_settings()
+    rag_service = RagService.from_settings(settings)
     if not rag_service.enabled:
         console.print(
             "[red]RAG is not configured -- set QDRANT_URL, QDRANT_API_KEY, and GOOGLE_API_KEY in .env.[/red]"
         )
         raise typer.Exit(1)
 
-    settings = get_settings()
     client = get_qdrant_client(settings)
     assert client is not None, "rag_service.enabled already confirmed Qdrant is configured"
     ensure_collection(client, settings.qdrant_docs_collection)
@@ -119,14 +140,14 @@ def ingest_bugs(
     ),
 ) -> None:
     """Seed the qa_bugs Qdrant collection for Triage's known-issue lookup."""
-    rag_service = RagService.from_settings()
+    settings = get_effective_settings()
+    rag_service = RagService.from_settings(settings)
     if not rag_service.enabled:
         console.print(
             "[red]RAG is not configured -- set QDRANT_URL, QDRANT_API_KEY, and GOOGLE_API_KEY in .env.[/red]"
         )
         raise typer.Exit(1)
 
-    settings = get_settings()
     client = get_qdrant_client(settings)
     assert client is not None, "rag_service.enabled already confirmed Qdrant is configured"
     ensure_collection(client, settings.qdrant_bugs_collection)
@@ -134,6 +155,91 @@ def ingest_bugs(
     bugs = load_bug_records(path)
     count = rag_service.upsert_bugs(bugs)
     console.print(f"Ingested {count} bug(s) into '{settings.qdrant_bugs_collection}'.")
+
+
+def _coerce_value(raw: str):
+    """Try to parse as JSON (so `3`, `false`, `[1,2]` etc. store as real
+    JSON types) and fall back to the raw string otherwise."""
+    try:
+        return json.loads(raw)
+    except json.JSONDecodeError:
+        return raw
+
+
+@config_app.command("set")
+def config_set(
+    key: str = typer.Argument(..., help="Setting name, must match a Settings field (e.g. max_retries)."),
+    value: str = typer.Argument(..., help="Value to store -- parsed as JSON if possible, else as a string."),
+) -> None:
+    """Set a config value in the qa_config DB (stored as JSON)."""
+    service = ConfigService.from_settings(get_settings())
+    if not service.enabled:
+        console.print("[red]Config DB is not configured -- set QA_CONFIG_DATABASE_URL in .env.[/red]")
+        raise typer.Exit(1)
+    service.set(key, _coerce_value(value))
+    console.print(f"Set {key!r} = {value!r}")
+
+
+@config_app.command("get")
+def config_get(key: str = typer.Argument(..., help="Setting name to look up.")) -> None:
+    """Get a config value from the qa_config DB."""
+    service = ConfigService.from_settings(get_settings())
+    value = service.get(key)
+    if value is None:
+        console.print(f"[yellow]{key!r} is not set (falls back to .env/default).[/yellow]")
+        raise typer.Exit(1)
+    console.print(value)
+
+
+@config_app.command("list")
+def config_list() -> None:
+    """List every config value currently stored in the qa_config DB."""
+    service = ConfigService.from_settings(get_settings())
+    if not service.enabled:
+        console.print("[yellow]Config DB is not configured -- set QA_CONFIG_DATABASE_URL in .env.[/yellow]")
+        raise typer.Exit(1)
+    values = service.get_all()
+    if not values:
+        console.print("[dim](no config values set -- everything falls back to .env/defaults)[/dim]")
+        return
+    for key, value in values.items():
+        console.print(f"{key} = {value}")
+
+
+@app.command("db-init")
+def db_init() -> None:
+    """Explicitly (re-)create the qa_logs/qa_config schemas.
+
+    Not required for normal use -- ConfigService/LogService ensure their
+    own schema automatically on first connect -- but useful for decoupling
+    ops/CI setup from a first `qa-agent run`/`config set`.
+    """
+    settings = get_settings()
+
+    config_dsn = get_config_dsn(settings)
+    if config_dsn:
+        conn = get_sync_connection(config_dsn)
+        if conn is not None:
+            ensure_config_schema(conn)
+            conn.close()
+            console.print("qa_config schema ensured.")
+        else:
+            console.print("[red]Could not connect to qa_config DB.[/red]")
+    else:
+        console.print("[dim]QA_CONFIG_DATABASE_URL not set -- skipping qa_config.[/dim]")
+
+    logs_pool = get_logs_pool(settings)
+    if logs_pool is not None:
+        asyncio.run(_ensure_logs_schema_once(logs_pool))
+        console.print("qa_logs schema ensured.")
+    else:
+        console.print("[dim]QA_LOGS_DATABASE_URL not set -- skipping qa_logs.[/dim]")
+
+
+async def _ensure_logs_schema_once(pool) -> None:
+    await pool.open(wait=True, timeout=5)
+    await ensure_logs_schema(pool)
+    await pool.close()
 
 
 if __name__ == "__main__":

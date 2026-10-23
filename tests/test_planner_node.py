@@ -1,6 +1,10 @@
 from qa_agent.agents.planner import TestPlanResponse, make_planner_node
+from qa_agent.config import Settings
+from qa_agent.db.log_service import LogService
 from qa_agent.graph.state import TestCase
 from qa_agent.rag.models import RetrievedDoc
+
+_DISABLED_LOG_SERVICE = LogService(None, Settings())
 
 
 class _StubStructuredLLM:
@@ -29,9 +33,12 @@ async def test_planner_node_sets_test_plan():
             TestCase(id="TC-01", title="Page loads", priority="high", steps=["Navigate to the URL"]),
         ]
     )
-    node = make_planner_node(_StubLLM(canned))
+    node = make_planner_node(_StubLLM(canned), _DISABLED_LOG_SERVICE)
 
     state = {
+        "run_id": "test-run",
+        "llm_provider": "groq",
+        "llm_model": "",
         "target_url": "https://example.com",
         "requirements_raw": "Check the page loads",
     }
@@ -44,9 +51,12 @@ async def test_planner_node_sets_test_plan():
 async def test_planner_node_includes_retrieved_docs_in_prompt():
     canned = TestPlanResponse(test_cases=[])
     stub_llm = _StubLLM(canned)
-    node = make_planner_node(stub_llm)
+    node = make_planner_node(stub_llm, _DISABLED_LOG_SERVICE)
 
     state = {
+        "run_id": "test-run",
+        "llm_provider": "groq",
+        "llm_model": "",
         "target_url": "https://example.com",
         "requirements_raw": "Check sign-up works",
         "retrieved_docs": [RetrievedDoc(text="Sign-up requires an 8+ char password.", source="sample.md", score=0.9)],
@@ -61,9 +71,12 @@ async def test_planner_node_includes_retrieved_docs_in_prompt():
 async def test_planner_node_omits_docs_block_when_no_docs_retrieved():
     canned = TestPlanResponse(test_cases=[])
     stub_llm = _StubLLM(canned)
-    node = make_planner_node(stub_llm)
+    node = make_planner_node(stub_llm, _DISABLED_LOG_SERVICE)
 
     state = {
+        "run_id": "test-run",
+        "llm_provider": "groq",
+        "llm_model": "",
         "target_url": "https://example.com",
         "requirements_raw": "Check sign-up works",
         "retrieved_docs": [],
