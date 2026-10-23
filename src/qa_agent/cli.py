@@ -6,11 +6,14 @@ import typer
 from rich.console import Console
 from rich.table import Table
 
+from qa_agent.agents.healer import HealResult, heal_script
 from qa_agent.config import get_effective_settings, get_settings
 from qa_agent.core.session import RunResult, run_qa_session
 from qa_agent.db.client import get_config_dsn, get_logs_pool, get_sync_connection
 from qa_agent.db.config_service import ConfigService
+from qa_agent.db.log_service import LogService
 from qa_agent.db.schema import ensure_config_schema, ensure_logs_schema
+from qa_agent.llm_router.model_router import ModelRouter
 from qa_agent.rag.client import get_qdrant_client
 from qa_agent.rag.collections import ensure_collection
 from qa_agent.rag.ingest import load_bug_records, load_doc_chunks
@@ -52,7 +55,13 @@ def _print_summary(result: RunResult) -> None:
     if result.bugs:
         console.print(f"\n[bold red]{len(result.bugs)} bug(s) flagged:[/bold red]")
         for bug in result.bugs:
-            console.print(f"  - {bug.id} [{bug.severity}] {bug.title}")
+            suffix = f" (repro: {bug.repro_script_path})" if bug.repro_script_path else ""
+            console.print(f"  - {bug.id} [{bug.severity}] {bug.title}{suffix}")
+
+    if result.generated_scripts:
+        console.print(f"\n[bold green]{len(result.generated_scripts)} regression script(s) generated:[/bold green]")
+        for script in result.generated_scripts:
+            console.print(f"  - {script.test_case_id}: {script.script_path}")
 
     console.print(f"\nMarkdown report: {result.report_markdown_path}")
     console.print(f"JSON report:     {result.report_json_path}")
@@ -77,6 +86,12 @@ def run(
     reports_dir: Path | None = typer.Option(
         None, "--reports-dir", help="Directory to write reports into (default: from config/settings)."
     ),
+    generate_regression_scripts: bool | None = typer.Option(
+        None,
+        "--generate-regression-scripts/--no-generate-regression-scripts",
+        help="Generate a standalone Playwright regression script for every passing "
+        "test case (default: from config/settings).",
+    ),
     verbose: bool = typer.Option(False, "-v", "--verbose", help="Verbose output."),
 ) -> None:
     """Run an AI-powered QA session against a target URL."""
@@ -89,6 +104,11 @@ def run(
     effective_headless = headless if headless is not None else settings.playwright_headless
     effective_max_retries = max_retries if max_retries is not None else settings.max_retries
     effective_reports_dir = reports_dir if reports_dir is not None else Path(settings.reports_dir)
+    effective_generate_regression_scripts = (
+        generate_regression_scripts
+        if generate_regression_scripts is not None
+        else settings.generate_regression_scripts
+    )
 
     if verbose:
         console.print(f"[dim]Target: {url}[/dim]")
@@ -103,10 +123,66 @@ def run(
             headless=effective_headless,
             max_retries=effective_max_retries,
             reports_dir=effective_reports_dir,
+            generate_regression_scripts=effective_generate_regression_scripts,
         )
     )
     _print_summary(result)
     raise typer.Exit(0 if result.overall_status == "pass" else 1)
+
+
+async def _heal_many(
+    targets: list[Path], router: ModelRouter, log_service: LogService, settings
+) -> list[HealResult]:
+    return [await heal_script(target, router, log_service, settings) for target in targets]
+
+
+@app.command("heal")
+def heal(
+    script: Path | None = typer.Option(
+        None, "--script", help="Path to one generated_tests/<id>.py script to heal."
+    ),
+    all_: bool = typer.Option(
+        False, "--all", help="Heal every generated script found under --reports-dir."
+    ),
+    reports_dir: Path | None = typer.Option(
+        None, "--reports-dir", help="Where to scan for generated scripts (default: from config/settings)."
+    ),
+    provider: str | None = typer.Option(None, "--provider", help="LLM provider override for healing."),
+    model: str | None = typer.Option(None, "--model", help="Model override for healing."),
+) -> None:
+    """Re-execute a generated regression script's original steps against the
+    live app and, if it still passes, re-synthesize its locators from a
+    fresh accessibility-tree snapshot. Does not require the original run's
+    state -- reads the script's JSON sidecar instead, so this can be run
+    long after (and independent of) the `qa-agent run` that produced it."""
+    if script is None and not all_:
+        console.print("[red]Specify --script <path> or --all.[/red]")
+        raise typer.Exit(1)
+
+    settings = get_effective_settings()
+    effective_reports_dir = reports_dir if reports_dir is not None else Path(settings.reports_dir)
+    targets = (
+        [script]
+        if script is not None
+        else sorted(effective_reports_dir.glob(f"*/{settings.generated_tests_dirname}/*.py"))
+    )
+    if not targets:
+        console.print("[yellow]No generated scripts found.[/yellow]")
+        raise typer.Exit(0)
+
+    router = ModelRouter.from_settings(settings, provider=provider, model=model)
+    log_service = LogService.from_settings(settings)
+
+    results = asyncio.run(_heal_many(targets, router, log_service, settings))
+
+    exit_code = 0
+    status_colors = {"healed": "green", "still_valid": "dim", "regression_detected": "red"}
+    for result in results:
+        color = status_colors[result.status]
+        console.print(f"[{color}]{result.status}: {result.script_path}[/{color}] -- {result.detail}")
+        if result.status == "regression_detected":
+            exit_code = 1
+    raise typer.Exit(exit_code)
 
 
 @app.command("ingest-docs")

@@ -69,10 +69,19 @@ def _canned_triage() -> TriageResponse:
         expected="A confirmation banner appears",
         actual="No banner appears",
         suspected_root_cause="Possibly a rendering race condition",
+        repro_script="from playwright.sync_api import sync_playwright\n# repro\n",
     )
 
 
-async def test_triage_node_sets_similar_bug_refs_from_rag_results():
+def _flagged_result_with_tool_calls() -> TestCaseResult:
+    result = _flagged_result()
+    result.steps[0].tool_calls = [
+        {"tool_name": "browser_click", "args": {"ref": "e1", "element": "Submit button"}, "result": "ok"}
+    ]
+    return result
+
+
+async def test_triage_node_sets_similar_bug_refs_from_rag_results(tmp_path):
     similar = [
         SimilarBug(id="BUG-SEED-001", title="Banner missing", description="...", severity="medium", score=0.8)
     ]
@@ -81,8 +90,10 @@ async def test_triage_node_sets_similar_bug_refs_from_rag_results():
 
     state = {
         "run_id": "test-run",
+        "target_url": "https://example.com",
         "llm_provider": "groq",
         "llm_model": "",
+        "screenshot_dir": str(tmp_path / "screenshots"),
         "bugs": [],
         "test_results": [_flagged_result()],
     }
@@ -95,14 +106,16 @@ async def test_triage_node_sets_similar_bug_refs_from_rag_results():
     assert "Banner missing" in user_message
 
 
-async def test_triage_node_reports_none_found_when_no_similar_bugs():
+async def test_triage_node_reports_none_found_when_no_similar_bugs(tmp_path):
     stub_llm = _StubLLM(_canned_triage())
     node = make_triage_node(_StubModelRouter(stub_llm), _StubRagService([]), _DISABLED_LOG_SERVICE, _SETTINGS)
 
     state = {
         "run_id": "test-run",
+        "target_url": "https://example.com",
         "llm_provider": "groq",
         "llm_model": "",
+        "screenshot_dir": str(tmp_path / "screenshots"),
         "bugs": [],
         "test_results": [_flagged_result()],
     }
@@ -113,3 +126,29 @@ async def test_triage_node_reports_none_found_when_no_similar_bugs():
 
     user_message = stub_llm.structured_llm.last_messages[1].content
     assert "none found" in user_message
+
+
+async def test_triage_node_writes_repro_script_and_sets_path(tmp_path):
+    stub_llm = _StubLLM(_canned_triage())
+    node = make_triage_node(_StubModelRouter(stub_llm), _StubRagService([]), _DISABLED_LOG_SERVICE, _SETTINGS)
+
+    state = {
+        "run_id": "test-run",
+        "target_url": "https://example.com",
+        "llm_provider": "groq",
+        "llm_model": "",
+        "screenshot_dir": str(tmp_path / "screenshots"),
+        "bugs": [],
+        "test_results": [_flagged_result_with_tool_calls()],
+    }
+    update = await node(state)
+
+    bug = update["bugs"][0]
+    assert bug.repro_script_path == "generated_tests/BUG-01_repro.py"
+    repro_path = tmp_path / "generated_tests" / "BUG-01_repro.py"
+    assert repro_path.exists()
+    assert repro_path.read_text() == _canned_triage().repro_script
+
+    user_message = stub_llm.structured_llm.last_messages[1].content
+    assert "browser_click" in user_message
+    assert "ephemeral accessibility-tree ids" in user_message

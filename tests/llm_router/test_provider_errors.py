@@ -40,6 +40,22 @@ def test_google_non_429_client_error_is_not_classified():
     assert not is_rate_limit_error("google", exc)
 
 
+def test_huggingface_rate_limit_error_is_classified():
+    pytest.importorskip("huggingface_hub")
+    from huggingface_hub.errors import HfHubHTTPError
+
+    exc = HfHubHTTPError("rate limited", response=_fake_response(429))
+    assert is_rate_limit_error("huggingface", exc)
+
+
+def test_huggingface_non_429_error_is_not_classified():
+    pytest.importorskip("huggingface_hub")
+    from huggingface_hub.errors import HfHubHTTPError
+
+    exc = HfHubHTTPError("bad request", response=_fake_response(400))
+    assert not is_rate_limit_error("huggingface", exc)
+
+
 def test_unrelated_exception_is_not_classified():
     assert not is_rate_limit_error("groq", ValueError("not a rate limit"))
     assert not is_rate_limit_error("google", ValueError("not a rate limit"))

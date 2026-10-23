@@ -8,6 +8,7 @@ from langgraph.graph import END, StateGraph
 from langgraph.graph.state import CompiledStateGraph
 
 from qa_agent.agents.analyzer import make_analyzer_node
+from qa_agent.agents.codegen import make_codegen_node
 from qa_agent.agents.executor import make_executor_node
 from qa_agent.agents.planner import make_planner_node
 from qa_agent.agents.retriever import make_retriever_node
@@ -106,6 +107,10 @@ def build_graph(
             "triage", make_triage_node(router, rag_service, log_service, settings), log_service
         ),
     )
+    graph.add_node(
+        "codegen",
+        _with_node_logging("codegen", make_codegen_node(router, log_service, settings), log_service),
+    )
     graph.add_node("report", _with_node_logging("report", _make_report_node(), log_service))
 
     route_map: dict[NodeName, str] = {
@@ -114,11 +119,12 @@ def build_graph(
         "executor": "executor",
         "analyzer": "analyzer",
         "triage": "triage",
+        "codegen": "codegen",
         "report": "report",
     }
 
     graph.set_conditional_entry_point(route, route_map)
-    for node in ("retriever", "planner", "executor", "analyzer", "triage"):
+    for node in ("retriever", "planner", "executor", "analyzer", "triage", "codegen"):
         graph.add_conditional_edges(node, route, route_map)
     graph.add_edge("report", END)
 

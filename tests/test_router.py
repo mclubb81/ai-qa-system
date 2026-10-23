@@ -1,5 +1,12 @@
 from qa_agent.graph.router import route
-from qa_agent.graph.state import Bug, QAState, StepResult, TestCase, TestCaseResult
+from qa_agent.graph.state import (
+    Bug,
+    GeneratedScript,
+    QAState,
+    StepResult,
+    TestCase,
+    TestCaseResult,
+)
 
 
 def _base_state(**overrides) -> QAState:
@@ -17,6 +24,8 @@ def _base_state(**overrides) -> QAState:
         "test_results": [],
         "bugs": [],
         "errors": [],
+        "generated_scripts": [],
+        "generate_regression_scripts": False,
         "started_at": "2026-01-01T00:00:00Z",
         "report_markdown_path": None,
         "report_json_path": None,
@@ -114,4 +123,53 @@ def test_routes_to_report_when_all_pass_no_bugs():
         suspected_bug=False,
     )
     state = _base_state(test_plan=[tc], test_results=[result], bugs=[])
+    assert route(state) == "report"
+
+
+def _passed_result(tc: TestCase) -> TestCaseResult:
+    return TestCaseResult(
+        test_case_id=tc.id,
+        title=tc.title,
+        priority=tc.priority,
+        steps=[_passed_step()],
+        started_at="2026-01-01T00:00:00Z",
+        verdict="pass",
+        suspected_bug=False,
+    )
+
+
+def test_routes_to_codegen_when_pass_result_pending_and_flag_enabled():
+    tc = _test_case()
+    state = _base_state(
+        test_plan=[tc],
+        test_results=[_passed_result(tc)],
+        generate_regression_scripts=True,
+        generated_scripts=[],
+    )
+    assert route(state) == "codegen"
+
+
+def test_routes_to_report_when_codegen_flag_disabled_even_with_pass_result():
+    tc = _test_case()
+    state = _base_state(
+        test_plan=[tc],
+        test_results=[_passed_result(tc)],
+        generate_regression_scripts=False,
+        generated_scripts=[],
+    )
+    assert route(state) == "report"
+
+
+def test_routes_to_report_when_codegen_already_done_for_pass_result():
+    tc = _test_case()
+    generated = GeneratedScript(
+        test_case_id=tc.id, title=tc.title, script_path="generated_tests/TC-01.py",
+        sidecar_path="generated_tests/TC-01.json",
+    )
+    state = _base_state(
+        test_plan=[tc],
+        test_results=[_passed_result(tc)],
+        generate_regression_scripts=True,
+        generated_scripts=[generated],
+    )
     assert route(state) == "report"

@@ -29,9 +29,11 @@ checks state shape in a fixed order:
 3. Any test case in `test_plan` with no matching `test_results` entry → `"executor"`.
 4. Any `test_results` entry with `verdict is None` → `"analyzer"`.
 5. Any `test_results` entry with `suspected_bug=True` and no matching `bugs` entry → `"triage"`.
-6. Otherwise → `"report"`.
+6. If `state["generate_regression_scripts"]` is true, any `test_results` entry with
+   `verdict == "pass"` and no matching `generated_scripts` entry → `"codegen"`.
+7. Otherwise → `"report"`.
 
-Because `route` is re-invoked after *every* node (via `add_conditional_edges` on all five worker
+Because `route` is re-invoked after *every* node (via `add_conditional_edges` on all six worker
 nodes, plus as the conditional entry point), there's no need for explicit "next node" edges between
 workers -- the graph always routes back through the Coordinator, which re-derives the correct next
 step from whatever the previous node changed in state.
@@ -54,6 +56,8 @@ Defined in `src/qa_agent/graph/state.py` as a `TypedDict`:
 | `test_results` | `list[TestCaseResult]` | Grows as the Executor runs test cases; entries are judged in place by the Analyzer. |
 | `bugs` | `list[Bug]` | Grows as the Triage node processes flagged results. |
 | `errors` | `list[str]` | Reserved; not currently written to by any node. |
+| `generated_scripts` | `list[GeneratedScript]` | Grows as the Generator (`codegen` node) processes passing results; empty unless `generate_regression_scripts` is true. |
+| `generate_regression_scripts` | `bool` | Opt-in flag, set once at session start, read directly by `route()` to decide whether to visit `codegen` at all. |
 | `started_at` | `str` | ISO timestamp, set once at session start. |
 | `report_markdown_path`, `report_json_path` | `str \| None` | Set by the `report` node at the end of a run. |
 
@@ -62,7 +66,8 @@ Nested Pydantic models, also in `graph/state.py`:
 - **`TestCase`**: `id`, `title`, `priority` (`"high"|"medium"|"low"`), `steps` (list of imperative strings, no selectors/code -- the Executor interprets them).
 - **`StepResult`**: `description`, `status` (`"pass"|"fail"`), `tool_calls` (raw transcript, only populated on the first step of a test case), `error`, `screenshot_path`.
 - **`TestCaseResult`**: `test_case_id`, `title`, `priority`, `steps: list[StepResult]`, `verdict` (`"pass"|"fail"|"flaky"|None`), `reasoning`, `suspected_bug`, `started_at`, `finished_at`.
-- **`Bug`**: `id` (`BUG-NN`), `title`, `severity`, `related_test_case_id`, `repro_steps`, `expected`, `actual`, `suspected_root_cause`, `screenshot_refs`, `similar_bug_refs` (populated from RAG lookups, see [docs/rag.md](rag.md)).
+- **`Bug`**: `id` (`BUG-NN`), `title`, `severity`, `related_test_case_id`, `repro_steps`, `expected`, `actual`, `suspected_root_cause`, `screenshot_refs`, `similar_bug_refs` (populated from RAG lookups, see [docs/rag.md](rag.md)), `repro_script_path` (set by Triage, see [Generator & Healer](#generator--healer) below).
+- **`GeneratedScript`**: `test_case_id`, `title`, `script_path`, `sidecar_path` -- written by the `codegen` node for each passing test case.
 
 ## Graph wiring (`graph/build.py`)
 
@@ -86,8 +91,8 @@ def build_graph(router, tools, rag_service, log_service, settings) -> CompiledSt
   This is the one error-logging boundary in the whole pipeline that does not swallow exceptions --
   a real failure still propagates all the way to the CLI, which exits non-zero.
 - `graph.set_conditional_entry_point(route, route_map)` plus `graph.add_conditional_edges(node, route, route_map)`
-  for every worker node (`retriever`, `planner`, `executor`, `analyzer`, `triage`) routes every
-  transition through the Coordinator. `report` has a plain edge to `END`.
+  for every worker node (`retriever`, `planner`, `executor`, `analyzer`, `triage`, `codegen`) routes
+  every transition through the Coordinator. `report` has a plain edge to `END`.
 
 ## Node-by-node reference
 
@@ -112,8 +117,15 @@ def build_graph(router, tools, rag_service, log_service, settings) -> CompiledSt
   loop" below for its `"flaky"` handling.
 - **Bug Triage** (`agents/triage.py::make_triage_node`) -- for a flagged, untriaged result: calls
   `rag_service.find_similar_bugs(f"{title}\n{reasoning}")` for context, then one structured-output
-  LLM call (`TriageResponse`) to produce a GitHub-issue-shaped `Bug`. `similar_bug_refs` is set from
-  the RAG lookup results directly (not LLM-authored), same precedent as `screenshot_refs`.
+  LLM call (`TriageResponse`, now including a `repro_script` field) to produce a GitHub-issue-shaped
+  `Bug` plus a standalone repro script written to `generated_tests/<bug-id>_repro.py`.
+  `similar_bug_refs` is set from the RAG lookup results directly (not LLM-authored), same precedent
+  as `screenshot_refs`. See [Generator & Healer](#generator--healer) below.
+- **Generator** (`agents/codegen.py::make_codegen_node`) -- opt-in (`generate_regression_scripts`).
+  For a passing, not-yet-generated result, one structured-output LLM call (`CodegenResponse`)
+  synthesizes a standalone Playwright regression script from the Executor's tool-call transcript,
+  written alongside a JSON sidecar (original steps + target URL) under `generated_tests/`. See
+  [Generator & Healer](#generator--healer) below.
 - **Report writer** (`graph/build.py::_make_report_node`, delegating to `report/writer.py::write_report`)
   -- builds a `QAReport`, renders `report.md` (Jinja2) and `report.json`, and writes both under
   `reports/<run_id>/`.
@@ -127,6 +139,39 @@ returns and bumps `retry_counts`. On the next pass through the Coordinator, that
 again has no matching `test_results` entry, so `route()` naturally sends it back to `"executor"`.
 This is the `Analyzer --"flaky, retries left"--> Coordinator` edge in the diagram below -- a
 router-mediated loop driven by state shape, not a literal graph edge back to `executor`.
+
+## Generator & Healer
+
+Two related but architecturally distinct capabilities, both added for the same reason: Groq (the
+default provider) has limited model selection, so the pipeline's heaviest reasoning/code-synthesis
+work (bug repro scripts, regression scripts, re-validating them) defaults to Hugging Face instead
+(see [docs/logging-and-config.md](logging-and-config.md)).
+
+- **Bug repro scripts ride inside the existing `triage` node** -- no new node, no new graph wiring.
+  `TriageResponse` gained a `repro_script` field; the node's prompt now also includes the failing
+  test case's raw tool-call transcript (`result.steps[0].tool_calls`), and the node writes the
+  LLM-produced script to `generated_tests/<bug-id>_repro.py`, recording the path on `Bug.repro_script_path`.
+- **Regression scripts are the new, opt-in `codegen` node** (`agents/codegen.py`), gated by
+  `state["generate_regression_scripts"]` and wired into `route()`/`build_graph` exactly like every
+  other worker node. It only ever processes *passing* results, and writes both a `.py` script and a
+  `.json` sidecar (`agents/codegen.py::write_generated_script`) -- the sidecar (original step
+  descriptions, target URL, test case id) is what makes Healer possible without needing the original
+  run's `QAState`.
+- **Healer is explicitly *not* a graph node.** Regression scripts exist precisely so they can be
+  re-run cheaply, independent of the LLM pipeline -- so healing them can't force a full pipeline run
+  either. `agents/healer.py::heal_script` is a standalone async function invoked directly by the
+  `qa-agent heal` CLI command (`cli.py`): it reads a script's `.json` sidecar, re-opens a fresh
+  `PlaywrightMCPSession`, and re-drives the *original* step descriptions live through the same
+  `build_executor_agent`/`extract_tool_calls` machinery the Executor uses (reused, not duplicated).
+  If the live re-execution still passes, it re-synthesizes the script from the fresh transcript
+  (reusing `agents/codegen.py::build_codegen_user_message` and the `CODEGEN_SYSTEM_PROMPT`) and
+  overwrites the file only if the regenerated script actually differs. If the live re-execution
+  *fails*, that's treated as a genuine app regression, not a stale-locator problem -- the file is
+  left untouched and `heal` reports `regression_detected` with a non-zero exit code, so a real
+  behavior change surfaces instead of being silently papered over.
+- Both `codegen` and `healer` route their LLM calls through `ModelRouter.call_with_selection` under
+  their own node-name keys (`"codegen"`, `"healer"`), identically to every other node -- they get
+  the exact same failover, Loop A rate limiting, and Loop B cost/latency ranking for free.
 
 ## Library entrypoint (`core/session.py::run_qa_session`)
 
@@ -151,8 +196,9 @@ LLM-calling node and the actual provider call:
 - **`ModelRouter`** (`llm_router/model_router.py`) -- built once per run
   (`ModelRouter.from_settings(...)`), it's what every LLM-calling node calls through instead of a
   single shared `llm`. For a given node, it resolves a candidate provider list (`Settings.
-  node_candidate_providers`, falling back to `[llm_provider]` -- today's single-provider behavior
-  exactly, until a user opts in), ranks the available candidates by Loop B's learned preference,
+  node_candidate_providers`, falling back to `[llm_provider]` for any node not in that map --
+  `triage`/`codegen`/`healer` default to `["huggingface", "groq"]` out of the box, every other node
+  defaults to the single configured `llm_provider`), ranks the available candidates by Loop B's learned preference,
   and tries them in order: a `DailyQuotaExceededError` permanently excludes that provider for the
   rest of the run; a native provider rate-limit error (classified by `llm_router/provider_errors.py`
   per-SDK) feeds Loop A and excludes the provider only after several consecutive hits (a provider
@@ -205,8 +251,11 @@ flowchart TD
     Analyzer -->|"flaky, retries left"| Coordinator
     Analyzer --> Coordinator
 
-    Coordinator -->|"flagged bug, untriaged"| Triage["Bug Triage"]
+    Coordinator -->|"flagged bug, untriaged"| Triage["Bug Triage\n(+ repro script)"]
     Triage --> Coordinator
+
+    Coordinator -->|"passing result, codegen on"| Codegen["Generator / codegen\n(optional, opt-in)"]
+    Codegen --> Coordinator
 
     Coordinator -->|"otherwise"| Report["Report writer\n(report.md + report.json)"]
     Report --> End(["Done"])
@@ -218,7 +267,13 @@ flowchart TD
     Executor -.-> Postgres
     Analyzer -.-> Postgres
     Triage -.-> Postgres
+    Codegen -.-> Postgres
     Retriever -.-> Postgres
+
+    GeneratedTests[("generated_tests/\n*.py + *.json sidecar")]
+    Codegen -.-> GeneratedTests
+    Triage -.->|"repro script"| GeneratedTests
+    GeneratedTests -. "qa-agent heal\n(separate command, not in this graph)" .-> Healer["Healer"]
 
     subgraph optional_services ["Optional external services -- qa-agent runs fully without either"]
         Qdrant
@@ -235,11 +290,15 @@ flowchart TD
 - `tests/test_router.py` -- routing decisions for every state shape, including the retry loop.
   (Not to be confused with `llm_router/` -- that's provider/model selection, an unrelated concern
   named to avoid colliding with this module.)
-- `tests/test_planner_node.py`, `tests/test_analyzer_node.py`, `tests/test_triage_node.py` -- node
-  behavior with hand-rolled stub LLMs, routed through a `_StubModelRouter` fake that just runs the
-  node's `build_call` against the stub LLM (single-candidate, no failover/ranking).
+- `tests/test_planner_node.py`, `tests/test_analyzer_node.py`, `tests/test_triage_node.py`,
+  `tests/test_codegen_node.py` -- node behavior with hand-rolled stub LLMs, routed through a
+  `_StubModelRouter` fake that just runs the node's `build_call` against the stub LLM
+  (single-candidate, no failover/ranking).
 - `tests/test_executor_parsing.py` -- `extract_tool_calls`/`extract_screenshots` against synthetic
   message transcripts.
+- `tests/test_healer.py` -- `heal_script`'s three outcomes (`healed`/`still_valid`/
+  `regression_detected`) plus the missing-sidecar error path, via a fake `ModelRouter` and an
+  injectable `session_factory` seam (standalone, not routed through `build_graph`).
 - `tests/test_pid_controller.py` -- the generic `PIDController`: P/I/D terms individually, output
   clamping, anti-windup recovery, state round-tripping.
 - `tests/test_rate_limiter.py` -- static limits plus Loop A's effective-rpm narrowing.

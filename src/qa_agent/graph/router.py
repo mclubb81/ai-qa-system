@@ -35,4 +35,14 @@ def route(state: QAState) -> NodeName:
     if flagged:
         return "triage"
 
+    if state["generate_regression_scripts"]:
+        codegen_ids = {g.test_case_id for g in state["generated_scripts"]}
+        pending_codegen = [
+            r
+            for r in state["test_results"]
+            if r.verdict == "pass" and r.test_case_id not in codegen_ids
+        ]
+        if pending_codegen:
+            return "codegen"
+
     return "report"

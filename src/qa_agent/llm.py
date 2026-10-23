@@ -7,6 +7,7 @@ _MODEL_FIELD_BY_PROVIDER = {
     "google": "google_model",
     "anthropic": "anthropic_model",
     "openai": "openai_model",
+    "huggingface": "huggingface_model",
 }
 
 
@@ -82,5 +83,22 @@ def get_llm(
             temperature=0,
             max_tokens=max_output_tokens,
         )
+
+    if resolved_provider == "huggingface":
+        from langchain_huggingface import ChatHuggingFace, HuggingFaceEndpoint
+
+        # provider="auto" lets HF's Inference Providers router pick a
+        # backend for this model; do_sample=False (rather than
+        # temperature=0) is the correct way to get deterministic output
+        # here -- some HF-routed backends reject temperature=0 outright.
+        endpoint = HuggingFaceEndpoint(
+            repo_id=resolved_model,
+            task="text-generation",
+            provider="auto",
+            huggingfacehub_api_token=settings.huggingface_api_key,
+            max_new_tokens=max_output_tokens if max_output_tokens is not None else 4096,
+            do_sample=False,
+        )
+        return ChatHuggingFace(llm=endpoint)
 
     raise ValueError(f"Unsupported LLM_PROVIDER: {resolved_provider!r}")

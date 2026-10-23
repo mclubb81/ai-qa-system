@@ -53,10 +53,20 @@ No bugs were flagged during this run.
 - **Expected:** {{ bug.expected }}
 - **Actual:** {{ bug.actual }}
 - **Suspected root cause:** {{ bug.suspected_root_cause }}
+{% if bug.repro_script_path %}- **Repro script:** `{{ bug.repro_script_path }}`{% endif %}
 
 {% for ref in bug.screenshot_refs %}
 ![screenshot]({{ ref }})
 {% endfor %}
+{% endfor %}
+
+## Generated Scripts
+
+{% if not report.generated_scripts %}
+No regression scripts were generated during this run.
+{% endif %}
+{% for script in report.generated_scripts %}
+- {{ script.test_case_id }}: {{ script.title }} -- `{{ script.script_path }}`
 {% endfor %}
 """
 )

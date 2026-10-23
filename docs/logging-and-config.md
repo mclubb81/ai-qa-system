@@ -196,9 +196,15 @@ else in this store) holding a map from a **scope** -- `"<provider>:chat"` or
     "google:chat":      {"rpm": 15, "rpd": 1500, "max_output_tokens": 1024},
     "anthropic:chat":   {"rpm": 50, "rpd": 1000, "max_output_tokens": 1024},
     "openai:chat":      {"rpm": 60, "rpd": 1000, "max_output_tokens": 1024},
+    "huggingface:chat": {"rpm": 10, "rpd": 300, "max_output_tokens": 4096},
     "google:embedding": {"rpm": 100, "rpd": 1500},
 }
 ```
+
+`huggingface:chat`'s `max_output_tokens` is 4x the other chat scopes' default since this provider
+is used for full-script synthesis (triage repro scripts, codegen, healer), not short structured
+JSON fields; its `rpm`/`rpd` are conservative since HF's serverless Inference Providers free
+allowance is small/shared across backends.
 
 This is a general cost-control mechanism, not a free-tier-only one -- `max_output_tokens` caps
 response length (and therefore spend) just as usefully on a paid plan as it does on a free one. The
@@ -239,7 +245,8 @@ in [docs/architecture.md](architecture.md#model-selection--adaptive-rate-limitin
 this section covers only the new `qa_config`-backed settings.
 
 ```python
-node_candidate_providers: dict[str, list[str]]   # default: {} -> every node uses [llm_provider]
+node_candidate_providers: dict[str, list[str]]   # default: triage/codegen/healer -> ["huggingface", "groq"];
+                                                  #          every other node -> [llm_provider]
 provider_cost_weights: dict[str, float]          # default: {} -> every provider weighted 1.0
 loop_a_pid_gains: dict[str, float]                # default: {} -> in-code defaults (see rate_limiter.py)
 loop_b_pid_gains: dict[str, float]                # default: {} -> in-code defaults (see cost_latency.py)
@@ -251,16 +258,25 @@ loop_b_failure_penalty_ms: float = 60_000.0
 loop_b_max_dt_seconds: float = 3600.0
 ```
 
-All default to empty/neutral -- zero behavior change until you opt in. `node_candidate_providers`
-is the task-complexity baseline: an ordered list per node (most-preferred first, also the tie-break
-when Loop B has no learned preference yet). Override the same way as `provider_limits` -- whole-map
-replace, no deep merge:
+Everything except `node_candidate_providers` defaults to empty/neutral -- zero behavior change until
+you opt in. `node_candidate_providers` is the task-complexity baseline: an ordered list per node
+(most-preferred first, also the tie-break when Loop B has no learned preference yet). It ships with
+one non-empty default -- `triage`/`codegen`/`healer` each prefer `huggingface` before falling back
+to `groq`, since those three do the pipeline's heaviest reasoning/code-synthesis work (bug repro
+scripts, regression scripts, re-validating them -- see
+[docs/architecture.md#generator--healer](architecture.md#generator--healer)). If
+`HUGGINGFACE_API_KEY` isn't set, `ModelRouter`'s existing failover (above) transparently falls over
+to `groq` on the first attempt, so this is safe even for an operator who hasn't configured Hugging
+Face at all. Override the same way as `provider_limits` -- whole-map replace, no deep merge:
 
 ```bash
 qa-agent config set node_candidate_providers '{"planner": ["anthropic", "groq"], "analyzer": ["groq"]}'
 qa-agent config set provider_cost_weights '{"anthropic": 5.0, "groq": 1.0}'
 qa-agent config set loop_a_pid_gains '{"kp": 3.0, "ki": 0.5, "kd": 0.0}'
 ```
+
+Note this replaces the whole map, so overriding it also means re-stating the shipped
+`triage`/`codegen`/`healer` defaults above if you still want them.
 
 An explicit `qa-agent run --provider ...`/`--model ...` (or a `run_qa_session(provider=..., model=...)`
 caller) overrides `node_candidate_providers` entirely for that run -- same "explicit flag wins"
