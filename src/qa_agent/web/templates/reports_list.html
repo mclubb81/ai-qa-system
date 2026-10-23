@@ -1,0 +1,26 @@
+{% extends "base.html" %}
+{% block title %}Reports{% endblock %}
+{% block content %}
+  <h1>Reports</h1>
+  {% if not reports %}
+    <p class="field-hint">No reports yet -- <a href="{{ url_for('main.new_run') }}">run a QA session</a>.</p>
+  {% else %}
+    <table class="table">
+      <thead>
+        <tr><th>Run</th><th>Target</th><th>Status</th><th>Started</th><th>Tests</th><th>Bugs</th></tr>
+      </thead>
+      <tbody>
+        {% for report in reports %}
+          <tr>
+            <td><a href="{{ url_for('main.report_detail', run_id=report.run_id) }}">{{ report.run_id }}</a></td>
+            <td>{{ report.target_url }}</td>
+            <td><span class="badge badge-{{ report.overall_status }}">{{ report.overall_status }}</span></td>
+            <td>{{ report.started_at }}</td>
+            <td>{{ report.test_case_count }}</td>
+            <td>{{ report.bug_count }}</td>
+          </tr>
+        {% endfor %}
+      </tbody>
+    </table>
+  {% endif %}
+{% endblock %}

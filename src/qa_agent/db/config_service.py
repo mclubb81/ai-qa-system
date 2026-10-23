@@ -78,3 +78,12 @@ class ConfigService:
                 (key, Json(value)),
             )
         self._conn.commit()
+
+    def delete(self, key: str) -> None:
+        """Remove a stored override, letting that key fall back to its
+        .env/hardcoded default again. Raises when disabled, same as set()."""
+        if self._conn is None:
+            raise RuntimeError("Config DB is not configured -- set QA_CONFIG_DATABASE_URL.")
+        with self._conn.cursor() as cur:
+            cur.execute("DELETE FROM qa_config WHERE key = %s", (key,))
+        self._conn.commit()

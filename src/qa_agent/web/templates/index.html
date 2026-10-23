@@ -1,0 +1,29 @@
+{% extends "base.html" %}
+{% block title %}QA Agent -- Dashboard{% endblock %}
+{% block content %}
+  <h1>Dashboard</h1>
+  <div class="card-grid">
+    <a class="card" href="{{ url_for('main.new_run') }}">
+      <h2>New Run</h2>
+      <p>Start an AI-driven QA session against a target URL.</p>
+    </a>
+    <a class="card" href="{{ url_for('main.reports_list') }}">
+      <h2>Reports</h2>
+      <p>{{ report_count }} run(s) recorded.</p>
+    </a>
+    <a class="card" href="{{ url_for('main.healer_view') }}">
+      <h2>Healer</h2>
+      <p>{{ script_count }} generated regression script(s) available to heal.</p>
+    </a>
+    <a class="card" href="{{ url_for('main.config_view') }}">
+      <h2>Config</h2>
+      <p>
+        {% if config_enabled %}
+          Edit provider, model and run-default settings.
+        {% else %}
+          Config DB not configured -- read-only.
+        {% endif %}
+      </p>
+    </a>
+  </div>
+{% endblock %}
