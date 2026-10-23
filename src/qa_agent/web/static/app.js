@@ -5,12 +5,18 @@ function pollJob(jobId) {
 
   var interval = setInterval(function () {
     fetch("/api/jobs/" + jobId)
-      .then(function (resp) { return resp.json(); })
-      .then(function (data) {
-        if (data.error) {
+      .then(function (resp) {
+        if (!resp.ok) {
+          // Unknown job (404) -- nothing more will ever change here.
           clearInterval(interval);
-          return;
+          return null;
         }
+        return resp.json();
+      })
+      .then(function (data) {
+        if (!data) return;
+        // Note: a job that itself FAILED also carries a (job-level) "error"
+        // field in this same payload -- that's expected and not this case.
         if (data.status !== card.dataset.status) {
           card.dataset.status = data.status;
           badge.textContent = data.status;
