@@ -1,6 +1,10 @@
 from qa_agent.agents.triage import TriageResponse, make_triage_node
+from qa_agent.config import Settings
+from qa_agent.db.log_service import LogService
 from qa_agent.graph.state import StepResult, TestCaseResult
 from qa_agent.rag.models import SimilarBug
+
+_DISABLED_LOG_SERVICE = LogService(None, Settings())
 
 
 class _StubStructuredLLM:
@@ -60,9 +64,15 @@ async def test_triage_node_sets_similar_bug_refs_from_rag_results():
         SimilarBug(id="BUG-SEED-001", title="Banner missing", description="...", severity="medium", score=0.8)
     ]
     stub_llm = _StubLLM(_canned_triage())
-    node = make_triage_node(stub_llm, _StubRagService(similar))
+    node = make_triage_node(stub_llm, _StubRagService(similar), _DISABLED_LOG_SERVICE)
 
-    state = {"bugs": [], "test_results": [_flagged_result()]}
+    state = {
+        "run_id": "test-run",
+        "llm_provider": "groq",
+        "llm_model": "",
+        "bugs": [],
+        "test_results": [_flagged_result()],
+    }
     update = await node(state)
 
     bug = update["bugs"][0]
@@ -74,9 +84,15 @@ async def test_triage_node_sets_similar_bug_refs_from_rag_results():
 
 async def test_triage_node_reports_none_found_when_no_similar_bugs():
     stub_llm = _StubLLM(_canned_triage())
-    node = make_triage_node(stub_llm, _StubRagService([]))
+    node = make_triage_node(stub_llm, _StubRagService([]), _DISABLED_LOG_SERVICE)
 
-    state = {"bugs": [], "test_results": [_flagged_result()]}
+    state = {
+        "run_id": "test-run",
+        "llm_provider": "groq",
+        "llm_model": "",
+        "bugs": [],
+        "test_results": [_flagged_result()],
+    }
     update = await node(state)
 
     bug = update["bugs"][0]

@@ -10,7 +10,9 @@ from langchain_core.tools import BaseTool
 from langgraph.graph.state import CompiledStateGraph
 from pydantic import BaseModel, Field
 
+from qa_agent.db.log_service import LogService
 from qa_agent.graph.state import QAState, StepResult, TestCaseResult
+from qa_agent.llm_logging import logged_llm_call
 from qa_agent.prompts.executor import EXECUTOR_SYSTEM_PROMPT
 from qa_agent.utils.ids import now_iso
 
@@ -93,6 +95,7 @@ def extract_screenshots(messages: list, screenshot_dir: Path, prefix: str) -> li
 
 def make_executor_node(
     executor_agent: CompiledStateGraph,
+    log_service: LogService,
 ) -> Callable[[QAState], Awaitable[dict]]:
     async def executor_node(state: QAState) -> dict:
         executed_ids = {r.test_case_id for r in state["test_results"]}
@@ -106,9 +109,17 @@ def make_executor_node(
         )
 
         started_at = now_iso()
-        result = await executor_agent.ainvoke(
-            {"messages": [HumanMessage(content=user_message)]},
-            config={"recursion_limit": 50},
+        result = await logged_llm_call(
+            lambda: executor_agent.ainvoke(
+                {"messages": [HumanMessage(content=user_message)]},
+                config={"recursion_limit": 50},
+            ),
+            run_id=state["run_id"],
+            node_name="executor",
+            provider=state["llm_provider"],
+            model=state["llm_model"],
+            log_service=log_service,
+            prompt_chars=len(user_message),
         )
         messages = result["messages"]
         structured: ExecutionReport = result["structured_response"]

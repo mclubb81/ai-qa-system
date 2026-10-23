@@ -1,7 +1,7 @@
 from functools import lru_cache
 from typing import TYPE_CHECKING
 
-from qa_agent.config import Settings, get_settings
+from qa_agent.config import Settings, get_effective_settings
 
 if TYPE_CHECKING:
     from langchain_core.embeddings import Embeddings
@@ -21,7 +21,7 @@ def get_embeddings(settings: Settings | None = None) -> "Embeddings | None":
     Caches on (model, api_key) rather than the Settings object itself, since
     pydantic settings instances aren't hashable.
     """
-    settings = settings or get_settings()
+    settings = settings or get_effective_settings()
     if not settings.google_api_key:
         return None
     return _build_embeddings(settings.rag_embedding_model, settings.google_api_key)

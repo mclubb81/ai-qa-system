@@ -24,7 +24,7 @@ class _StubRagService:
 
 
 def _patch_rag(monkeypatch, stub):
-    monkeypatch.setattr(cli_module.RagService, "from_settings", classmethod(lambda cls: stub))
+    monkeypatch.setattr(cli_module.RagService, "from_settings", classmethod(lambda cls, settings=None: stub))
     monkeypatch.setattr(cli_module, "ensure_collection", lambda client, name: None)
     monkeypatch.setattr(cli_module, "get_qdrant_client", lambda settings: object())
 
@@ -55,7 +55,7 @@ def test_ingest_bugs_reports_bug_count(monkeypatch):
 
 def test_ingest_docs_fails_clearly_when_rag_disabled(monkeypatch):
     stub = _StubRagService(enabled=False)
-    monkeypatch.setattr(cli_module.RagService, "from_settings", classmethod(lambda cls: stub))
+    monkeypatch.setattr(cli_module.RagService, "from_settings", classmethod(lambda cls, settings=None: stub))
 
     docs_dir = Path(__file__).parent / "fixtures" / "docs"
     result = runner.invoke(app, ["ingest-docs", str(docs_dir)])
@@ -66,7 +66,7 @@ def test_ingest_docs_fails_clearly_when_rag_disabled(monkeypatch):
 
 def test_ingest_bugs_fails_clearly_when_rag_disabled(monkeypatch):
     stub = _StubRagService(enabled=False)
-    monkeypatch.setattr(cli_module.RagService, "from_settings", classmethod(lambda cls: stub))
+    monkeypatch.setattr(cli_module.RagService, "from_settings", classmethod(lambda cls, settings=None: stub))
 
     bugs_path = Path(__file__).parent / "fixtures" / "bugs" / "sample_bugs.json"
     result = runner.invoke(app, ["ingest-bugs", str(bugs_path)])
