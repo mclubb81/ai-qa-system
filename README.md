@@ -27,6 +27,50 @@ Markdown + JSON report.
   escaping error; every LLM call is timed and sized. Writes are always best-effort -- a logging DB
   outage never crashes or blocks a live run.
 
+```mermaid
+flowchart TD
+    Start(["qa-agent run"]) --> Coordinator{{"Coordinator / router\n(graph/router.py::route)"}}
+
+    Coordinator -->|"no retrieved_docs yet"| Retriever["Retriever\n(optional RAG)"]
+    Retriever --> Coordinator
+
+    Coordinator -->|"no test_plan yet"| Planner["Planner"]
+    Planner --> Coordinator
+
+    Coordinator -->|"pending test case"| Executor["Executor\n(Playwright MCP tools)"]
+    Executor --> Coordinator
+
+    Coordinator -->|"unjudged result"| Analyzer["Analyzer"]
+    Analyzer -->|"flaky, retries left"| Coordinator
+    Analyzer --> Coordinator
+
+    Coordinator -->|"flagged bug, untriaged"| Triage["Bug Triage"]
+    Triage --> Coordinator
+
+    Coordinator -->|"otherwise"| Report["Report writer\n(report.md + report.json)"]
+    Report --> End(["Done"])
+
+    Retriever -. "retrieve_docs()" .-> Qdrant[("Qdrant\nqa_docs / qa_bugs")]
+    Triage -. "find_similar_bugs()" .-> Qdrant
+
+    Planner -.->|"log_node_transition\nlogged_llm_call"| Postgres[("Postgres\nqa_logs / qa_config")]
+    Executor -.-> Postgres
+    Analyzer -.-> Postgres
+    Triage -.-> Postgres
+    Retriever -.-> Postgres
+
+    subgraph optional_services ["Optional external services -- qa-agent runs fully without either"]
+        Qdrant
+        Postgres
+    end
+
+    style optional_services fill:#f5f5f5,stroke:#999,stroke-dasharray: 4 3
+    style Qdrant stroke-dasharray: 3 3
+    style Postgres stroke-dasharray: 3 3
+```
+
+See [docs/architecture.md](docs/architecture.md) for the full node-by-node reference.
+
 The core orchestration lives behind a single library entrypoint, `run_qa_session(...)`
 (`core/session.py`), so the CLI is a thin wrapper and a future API/UI layer can call it directly.
 
@@ -86,12 +130,10 @@ pip install -e ".[rag]"
 
 ```bash
 qa-agent ingest-docs ./docs --chunk-size 1000 --chunk-overlap 100
-qa-agent ingest-bugs ./known_bugs.json
 ```
 
-`ingest-docs` indexes `.md`/`.txt` files (one file or a directory) into the `qa_docs` collection.
-`ingest-bugs` indexes a JSON file -- a list of `{id?, title, description, severity?}` records --
-into the `qa_bugs` collection.
+See [docs/rag.md](docs/rag.md) for the full guide (collection schemas, embedding details,
+ingestion examples, and how retrieval degrades when unconfigured).
 
 ## Logging + config (optional, Postgres)
 
@@ -111,13 +153,10 @@ defaults match `.env.example`'s placeholders). Schema is created automatically o
 
 ```bash
 qa-agent config set max_retries 3       # overrides MAX_RETRIES from .env once the config DB is reachable
-qa-agent config get max_retries
-qa-agent config list
 ```
 
-Config keys must match a `Settings` field name (e.g. `llm_provider`, `max_retries`,
-`playwright_headless`, `rag_docs_top_k`) to take effect -- values are stored as JSON, so
-`qa-agent config set playwright_headless false` stores a real boolean, not the string `"false"`.
+See [docs/logging-and-config.md](docs/logging-and-config.md) for the full guide (table schemas,
+the config-precedence chain, and the full `config set/get/list` reference).
 
 ## Development
 
@@ -130,3 +169,6 @@ ruff check src tests scripts
 Tests marked `@pytest.mark.integration` spawn real subprocesses or call real APIs and are excluded
 from the default `pytest` run; run them explicitly with `pytest -m integration` once you have an
 API key and Node set up.
+
+For the full CLI command reference (flags, exit codes, examples for every command), see
+[docs/cli.md](docs/cli.md).
