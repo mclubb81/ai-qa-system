@@ -15,8 +15,8 @@ blank and `qa-agent` behaves exactly as without either.
 
 Splitting them into two databases (rather than two tables or two schemas in one database) keeps
 the failure domains separable: a logging outage can never block a config read, and vice versa, and
-an operator can stand up only the one they need. Both run on one local Postgres server via
-`docker-compose.yml` for convenience -- see [Local setup](#local-setup).
+an operator can stand up only the one they need. Both live on one free managed Postgres project
+(e.g. [Neon](https://neon.tech)) for convenience -- see [Local setup](#local-setup).
 
 **The one bootstrapping exception**: `QA_LOGS_DATABASE_URL` and `QA_CONFIG_DATABASE_URL` themselves
 can never live *in* the config DB, since you need them to find it. They're always read from `.env`
@@ -278,18 +278,24 @@ last error, current score), not something to hand-edit with `config set`. Delete
 
 ```bash
 pip install -e ".[db]"
-docker compose up -d
 ```
 
-`docker-compose.yml` runs one `postgres:16-alpine` container. The official image auto-creates
-`qa_logs` (via `POSTGRES_DB`); `docker/init-db.sh` additionally creates `qa_config` the first time
-the container starts against a fresh (empty) data volume.
+No local Postgres needed -- use a free managed provider instead, e.g. [Neon](https://neon.tech)
+(no credit card, and it supports a second database per project, unlike some single-database free
+tiers):
 
-In `.env`, set `QA_LOGS_DATABASE_URL` and `QA_CONFIG_DATABASE_URL` (defaults in `.env.example`
-match the compose file's credentials). Schema is created automatically on first connect by both
-`ConfigService.from_settings()` and `LogService._ensure_ready()` -- `qa-agent db-init` exists for
-explicitly (re-)creating both schemas up front, decoupled from a first `run`/`config set`, which is
-useful for CI/ops setup.
+1. Create a free Neon project. That gives you database #1 -- use it as `qa_logs` (rename it if you
+   like).
+2. Connect to that project with any Postgres client (Neon's own SQL editor, `psql`, or a GUI
+   client like DBeaver) and run `CREATE DATABASE qa_config;` once -- the same single statement
+   the old Docker setup used to run automatically on first container start.
+3. Copy both databases' connection strings from the Neon dashboard into `QA_LOGS_DATABASE_URL` and
+   `QA_CONFIG_DATABASE_URL` in `.env` (see `.env.example`).
+
+Any other managed Postgres provider that supports more than one database per project works the
+same way. Schema is created automatically on first connect by both `ConfigService.from_settings()`
+and `LogService._ensure_ready()` -- `qa-agent db-init` exists for explicitly (re-)creating both
+schemas up front, decoupled from a first `run`/`config set`, which is useful for CI/ops setup.
 
 ## CLI reference (brief)
 
@@ -308,7 +314,7 @@ Full flag tables and exit codes: [docs/cli.md](cli.md).
   (`_StubCursor`, `_StubSyncConnection`, `_StubAsyncPool`) shared via `tests/conftest.py`, following
   the repo's no-mocking-framework convention.
 - `tests/test_db_integration.py` -- `@pytest.mark.integration`, a real round-trip against live
-  Postgres (e.g. the `docker compose` instance); skipped by default.
+  Postgres (e.g. your managed Postgres project); skipped by default.
 - `tests/test_cli_config.py` -- the `config set/get/list` commands against a stub `ConfigService`.
 - `tests/test_rate_limiter.py` -- `provider_limits` window math: under-limit no-op, an `rpm` breach
   waiting the right number of seconds, an `rpd` breach raising `DailyQuotaExceededError` without

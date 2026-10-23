@@ -144,12 +144,14 @@ leave the `.env` Postgres fields blank and `qa-agent` behaves exactly as without
 
 ```bash
 pip install -e ".[db]"
-docker compose up -d   # starts one local Postgres with both qa_logs and qa_config created
 ```
 
-In `.env`, set `QA_LOGS_DATABASE_URL` and `QA_CONFIG_DATABASE_URL` (the `docker-compose.yml`
-defaults match `.env.example`'s placeholders). Schema is created automatically on first use --
-`qa-agent db-init` is available if you want to set it up explicitly instead.
+No local Postgres needed -- point `QA_LOGS_DATABASE_URL`/`QA_CONFIG_DATABASE_URL` in `.env` at a
+free managed Postgres project (e.g. [Neon](https://neon.tech)) instead. See
+[docs/logging-and-config.md#local-setup](docs/logging-and-config.md#local-setup) for the full
+steps (create a project, add a second `qa_config` database, copy both connection strings). Schema
+is created automatically on first use -- `qa-agent db-init` is available if you want to set it up
+explicitly instead.
 
 ```bash
 qa-agent config set max_retries 3       # overrides MAX_RETRIES from .env once the config DB is reachable
