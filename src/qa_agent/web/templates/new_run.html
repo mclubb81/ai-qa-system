@@ -1,0 +1,47 @@
+{% extends "base.html" %}
+{% block title %}New Run{% endblock %}
+{% block content %}
+  <h1>New Run</h1>
+  <form class="card form" method="post" enctype="multipart/form-data">
+    <label for="url">Target URL</label>
+    <input type="url" id="url" name="url" placeholder="https://example.com" required>
+
+    <label for="requirements_text">Requirements</label>
+    <textarea id="requirements_text" name="requirements_text" rows="8"
+      placeholder="Paste natural-language requirements here, or upload a file below."></textarea>
+    <label for="requirements_file" class="field-hint">...or upload a requirements file</label>
+    <input type="file" id="requirements_file" name="requirements_file">
+
+    <div class="form-row">
+      <div>
+        <label for="provider">Provider</label>
+        <select id="provider" name="provider">
+          <option value="">(default: {{ settings.llm_provider }})</option>
+          {% for provider in providers %}
+            <option value="{{ provider }}">{{ provider }}</option>
+          {% endfor %}
+        </select>
+      </div>
+      <div>
+        <label for="model">Model override</label>
+        <input type="text" id="model" name="model" placeholder="(provider default)">
+      </div>
+      <div>
+        <label for="max_retries">Max retries</label>
+        <input type="number" id="max_retries" name="max_retries" min="0" value="{{ settings.max_retries }}">
+      </div>
+    </div>
+
+    <label class="checkbox-row">
+      <input type="checkbox" name="headless" checked>
+      Run browser headless
+    </label>
+    <label class="checkbox-row">
+      <input type="checkbox" name="generate_regression_scripts"
+        {% if settings.generate_regression_scripts %}checked{% endif %}>
+      Generate regression scripts for passing tests
+    </label>
+
+    <button type="submit" class="btn-primary">Start Run</button>
+  </form>
+{% endblock %}

@@ -179,6 +179,24 @@ connection string isn't set. See [docs/logging-and-config.md](logging-and-config
 qa-agent db-init
 ```
 
+## `qa-agent web`
+
+Launch the local web UI (run sessions, browse reports, edit config, trigger heal) -- see
+[docs/web.md](web.md) for the full guide.
+
+| Flag | Default | Description |
+|---|---|---|
+| `--host` | `127.0.0.1` | Interface to bind. |
+| `--port` | `5000` | Port to listen on. |
+| `--debug` | off | Flask debug mode. Refused unless `--host` is loopback. |
+
+```bash
+qa-agent web
+```
+
+Exit code: `1` if Flask isn't installed (run `pip install -e ".[web]"`), or if `--debug` is
+combined with a non-loopback `--host`.
+
 ## Exit code summary
 
 | Command | Exit `0` | Exit `1` |
@@ -190,3 +208,4 @@ qa-agent db-init
 | `config get` | key found | key not set (DB unreachable or just unset) |
 | `config list` | printed (even if empty) | config DB not configured |
 | `db-init` | always `0` | -- |
+| `web` | server exits normally (Ctrl+C) | Flask not installed, or `--debug` with a non-loopback `--host` |

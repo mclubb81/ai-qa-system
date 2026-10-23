@@ -211,6 +211,19 @@ qa-agent config set max_retries 3       # overrides MAX_RETRIES from .env once t
 See [docs/logging-and-config.md](docs/logging-and-config.md) for the full guide (table schemas,
 the config-precedence chain, and the full `config set/get/list` reference).
 
+## Web UI (optional)
+
+A local, dark-themed Flask UI for everything above -- starting runs, browsing reports, editing
+config, and triggering the healer -- without touching the terminal:
+
+```bash
+pip install -e ".[web]"
+qa-agent web
+```
+
+Then open `http://127.0.0.1:5000`. Binds to loopback only by default. See
+[docs/web.md](docs/web.md) for the full guide.
+
 ## Development
 
 ```bash

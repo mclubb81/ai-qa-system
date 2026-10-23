@@ -1,12 +1,11 @@
 import asyncio
-import json
 from pathlib import Path
 
 import typer
 from rich.console import Console
 from rich.table import Table
 
-from qa_agent.agents.healer import HealResult, heal_script
+from qa_agent.agents.healer import heal_many
 from qa_agent.config import get_effective_settings, get_settings
 from qa_agent.core.session import RunResult, run_qa_session
 from qa_agent.db.client import get_config_dsn, get_logs_pool, get_sync_connection
@@ -18,6 +17,7 @@ from qa_agent.rag.client import get_qdrant_client
 from qa_agent.rag.collections import ensure_collection
 from qa_agent.rag.ingest import load_bug_records, load_doc_chunks
 from qa_agent.rag.service import RagService
+from qa_agent.utils.coerce import coerce_value
 
 app = typer.Typer(add_completion=False)
 console = Console()
@@ -130,12 +130,6 @@ def run(
     raise typer.Exit(0 if result.overall_status == "pass" else 1)
 
 
-async def _heal_many(
-    targets: list[Path], router: ModelRouter, log_service: LogService, settings
-) -> list[HealResult]:
-    return [await heal_script(target, router, log_service, settings) for target in targets]
-
-
 @app.command("heal")
 def heal(
     script: Path | None = typer.Option(
@@ -173,7 +167,7 @@ def heal(
     router = ModelRouter.from_settings(settings, provider=provider, model=model)
     log_service = LogService.from_settings(settings)
 
-    results = asyncio.run(_heal_many(targets, router, log_service, settings))
+    results = asyncio.run(heal_many(targets, router, log_service, settings))
 
     exit_code = 0
     status_colors = {"healed": "green", "still_valid": "dim", "regression_detected": "red"}
@@ -233,15 +227,6 @@ def ingest_bugs(
     console.print(f"Ingested {count} bug(s) into '{settings.qdrant_bugs_collection}'.")
 
 
-def _coerce_value(raw: str):
-    """Try to parse as JSON (so `3`, `false`, `[1,2]` etc. store as real
-    JSON types) and fall back to the raw string otherwise."""
-    try:
-        return json.loads(raw)
-    except json.JSONDecodeError:
-        return raw
-
-
 @config_app.command("set")
 def config_set(
     key: str = typer.Argument(..., help="Setting name, must match a Settings field (e.g. max_retries)."),
@@ -252,7 +237,7 @@ def config_set(
     if not service.enabled:
         console.print("[red]Config DB is not configured -- set QA_CONFIG_DATABASE_URL in .env.[/red]")
         raise typer.Exit(1)
-    service.set(key, _coerce_value(value))
+    service.set(key, coerce_value(value))
     console.print(f"Set {key!r} = {value!r}")
 
 
@@ -316,6 +301,30 @@ async def _ensure_logs_schema_once(pool) -> None:
     await pool.open(wait=True, timeout=5)
     await ensure_logs_schema(pool)
     await pool.close()
+
+
+@app.command("web")
+def web(
+    host: str = typer.Option("127.0.0.1", "--host", help="Interface to bind (default: localhost-only)."),
+    port: int = typer.Option(5000, "--port", help="Port to listen on."),
+    debug: bool = typer.Option(False, "--debug", help="Enable Flask debug mode (reload + debugger)."),
+) -> None:
+    """Launch the local web UI (run sessions, browse reports, edit config, trigger heal)."""
+    try:
+        from qa_agent.web.app import create_app
+    except ImportError:
+        console.print("[red]Flask is not installed -- run `pip install -e \".[web]\"`.[/red]")
+        raise typer.Exit(1) from None
+
+    if debug and host not in ("127.0.0.1", "localhost"):
+        console.print(
+            "[red]Refusing --debug with a non-localhost --host (Werkzeug's debugger allows "
+            "arbitrary code execution if reachable).[/red]"
+        )
+        raise typer.Exit(1)
+
+    console.print(f"Serving on http://{host}:{port} (Ctrl+C to stop)")
+    create_app().run(host=host, port=port, debug=debug)
 
 
 if __name__ == "__main__":

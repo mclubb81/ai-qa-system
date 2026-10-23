@@ -1,0 +1,98 @@
+{% extends "base.html" %}
+{% block title %}Config{% endblock %}
+{% block content %}
+  <h1>Config</h1>
+
+  {% if not service_enabled %}
+    <div class="banner banner-warning">
+      Config DB not configured -- set <code>QA_CONFIG_DATABASE_URL</code> in <code>.env</code> to enable
+      editing. Showing read-only effective settings from <code>.env</code>.
+    </div>
+  {% endif %}
+
+  <form class="card form" method="post">
+    <fieldset {% if not service_enabled %}disabled{% endif %}>
+      <legend>LLM Provider &amp; Keys</legend>
+      <label for="llm_provider">Default provider</label>
+      <input type="text" id="llm_provider" name="llm_provider" value="{{ settings.llm_provider }}">
+
+      {% for provider in ["groq", "google", "anthropic", "openai", "huggingface"] %}
+        {% set key_field = provider + "_api_key" %}
+        {% set model_field = provider + "_model" %}
+        <div class="form-row">
+          <div>
+            <label for="{{ key_field }}">{{ provider }} API key</label>
+            <input type="password" id="{{ key_field }}" name="{{ key_field }}"
+                   placeholder="{{ mask if settings[key_field] else '(not set)' }}">
+          </div>
+          <div>
+            <label for="{{ model_field }}">{{ provider }} model</label>
+            <input type="text" id="{{ model_field }}" name="{{ model_field }}" value="{{ settings[model_field] }}">
+          </div>
+          <label class="checkbox-row">
+            <input type="checkbox" name="delete_{{ key_field }}"> clear key
+          </label>
+        </div>
+      {% endfor %}
+    </fieldset>
+
+    <fieldset {% if not service_enabled %}disabled{% endif %}>
+      <legend>Run Defaults</legend>
+      <label class="checkbox-row">
+        <input type="checkbox" name="playwright_headless" {% if settings.playwright_headless %}checked{% endif %}>
+        Run browser headless
+      </label>
+      <label for="reports_dir">Reports directory</label>
+      <input type="text" id="reports_dir" name="reports_dir" value="{{ settings.reports_dir }}">
+      <label for="max_retries">Max retries</label>
+      <input type="number" id="max_retries" name="max_retries" value="{{ settings.max_retries }}">
+      <label class="checkbox-row">
+        <input type="checkbox" name="generate_regression_scripts"
+               {% if settings.generate_regression_scripts %}checked{% endif %}>
+        Generate regression scripts by default
+      </label>
+      <label for="generated_tests_dirname">Generated tests dirname</label>
+      <input type="text" id="generated_tests_dirname" name="generated_tests_dirname"
+             value="{{ settings.generated_tests_dirname }}">
+    </fieldset>
+
+    <fieldset {% if not service_enabled %}disabled{% endif %}>
+      <legend>RAG</legend>
+      <label for="qdrant_url">Qdrant URL</label>
+      <input type="text" id="qdrant_url" name="qdrant_url" value="{{ settings.qdrant_url or '' }}">
+      <label for="qdrant_api_key">Qdrant API key</label>
+      <input type="password" id="qdrant_api_key" name="qdrant_api_key"
+             placeholder="{{ mask if settings.qdrant_api_key else '(not set)' }}">
+      <div class="form-row">
+        <div>
+          <label for="qdrant_docs_collection">Docs collection</label>
+          <input type="text" id="qdrant_docs_collection" name="qdrant_docs_collection"
+                 value="{{ settings.qdrant_docs_collection }}">
+        </div>
+        <div>
+          <label for="qdrant_bugs_collection">Bugs collection</label>
+          <input type="text" id="qdrant_bugs_collection" name="qdrant_bugs_collection"
+                 value="{{ settings.qdrant_bugs_collection }}">
+        </div>
+      </div>
+    </fieldset>
+
+    <fieldset {% if not service_enabled %}disabled{% endif %}>
+      <legend>Rate / Cost Tuning (raw JSON)</legend>
+      {% for field in json_fields %}
+        <label for="{{ field }}">{{ field }}</label>
+        <textarea id="{{ field }}" name="{{ field }}" rows="3"
+          class="json-field">{{ settings[field] | tojson }}</textarea>
+      {% endfor %}
+    </fieldset>
+
+    <div class="banner banner-info">
+      <code>qa_logs_database_url</code> / <code>qa_config_database_url</code> are bootstrap-only (set via
+      <code>.env</code>, not editable here -- the app needs them to find this config DB in the first place).
+    </div>
+
+    {% if service_enabled %}
+      <button type="submit" class="btn-primary">Save</button>
+    {% endif %}
+  </form>
+{% endblock %}

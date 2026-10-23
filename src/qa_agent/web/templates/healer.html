@@ -1,0 +1,48 @@
+{% extends "base.html" %}
+{% block title %}Healer{% endblock %}
+{% block content %}
+  <h1>Healer</h1>
+  {% if not scripts %}
+    <p class="field-hint">No generated regression scripts found.</p>
+  {% else %}
+    <form class="card form" method="post">
+      <table class="table">
+        <thead>
+          <tr>
+            <th><input type="checkbox" id="select-all" data-target="script"></th>
+            <th>Run</th><th>Test case</th><th>Title</th><th>Path</th>
+          </tr>
+        </thead>
+        <tbody>
+          {% for script in scripts %}
+            <tr>
+              <td><input type="checkbox" name="script" value="{{ script.path }}"></td>
+              <td>{{ script.run_id }}</td>
+              <td>{{ script.test_case_id }}</td>
+              <td>{{ script.title }}</td>
+              <td>{{ script.path }}</td>
+            </tr>
+          {% endfor %}
+        </tbody>
+      </table>
+
+      <div class="form-row">
+        <div>
+          <label for="provider">Provider override</label>
+          <select id="provider" name="provider">
+            <option value="">(default)</option>
+            {% for provider in providers %}
+              <option value="{{ provider }}">{{ provider }}</option>
+            {% endfor %}
+          </select>
+        </div>
+        <div>
+          <label for="model">Model override</label>
+          <input type="text" id="model" name="model" placeholder="(provider default)">
+        </div>
+      </div>
+
+      <button type="submit" class="btn-primary">Heal selected</button>
+    </form>
+  {% endif %}
+{% endblock %}

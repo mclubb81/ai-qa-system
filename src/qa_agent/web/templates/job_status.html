@@ -1,0 +1,47 @@
+{% extends "base.html" %}
+{% block title %}Job {{ job.job_id }}{% endblock %}
+{% block content %}
+  <h1>{{ job.kind|capitalize }} Job</h1>
+  <div class="card" id="job-card" data-job-id="{{ job.job_id }}" data-status="{{ job.status }}">
+    <p>Status: <span class="badge badge-{{ job.status }}" id="job-status-badge">{{ job.status }}</span></p>
+    <p class="field-hint">Created: {{ job.created_at }}</p>
+    {% if job.started_at %}<p class="field-hint">Started: {{ job.started_at }}</p>{% endif %}
+    {% if job.finished_at %}<p class="field-hint">Finished: {{ job.finished_at }}</p>{% endif %}
+
+    {% if job.params %}
+      <ul class="kv-list">
+        {% for key, value in job.params.items() %}
+          <li><strong>{{ key }}</strong>: {{ value }}</li>
+        {% endfor %}
+      </ul>
+    {% endif %}
+
+    <div id="job-result">
+      {% if job.status == "error" %}
+        <div class="banner banner-danger">{{ job.error }}</div>
+      {% elif job.status == "done" and job.kind == "run" %}
+        <a class="btn-primary" href="{{ url_for('main.report_detail', run_id=job.result.run_id) }}">
+          View report ({{ job.result.overall_status }})
+        </a>
+      {% elif job.status == "done" and job.kind == "heal" %}
+        <table class="table">
+          <thead><tr><th>Script</th><th>Status</th><th>Detail</th></tr></thead>
+          <tbody>
+            {% for item in job.result %}
+              <tr>
+                <td>{{ item.script_path }}</td>
+                <td><span class="badge badge-{{ item.status }}">{{ item.status }}</span></td>
+                <td>{{ item.detail }}</td>
+              </tr>
+            {% endfor %}
+          </tbody>
+        </table>
+      {% endif %}
+    </div>
+
+    <p class="field-hint"><a href="{{ url_for('main.job_status', job_id=job.job_id) }}">Refresh</a></p>
+  </div>
+{% endblock %}
+{% block scripts %}
+  <script>pollJob("{{ job.job_id }}");</script>
+{% endblock %}

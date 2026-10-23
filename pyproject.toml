@@ -27,6 +27,7 @@ google = ["langchain-google-genai>=2.0.0"]
 huggingface = ["langchain-huggingface>=0.1.0"]
 rag = ["qdrant-client>=1.9.0", "langchain-google-genai>=2.0.0"]
 db = ["psycopg[binary]>=3.1", "psycopg-pool>=3.2"]
+web = ["flask>=3.0"]
 dev = ["pytest>=8.0", "pytest-asyncio>=0.23", "ruff>=0.6", "mypy>=1.10"]
 
 [project.scripts]
@@ -34,6 +35,9 @@ qa-agent = "qa_agent.cli:app"
 
 [tool.setuptools.packages.find]
 where = ["src"]
+
+[tool.setuptools.package-data]
+"qa_agent.web" = ["templates/*.html", "static/*.css", "static/*.js"]
 
 [tool.pytest.ini_options]
 addopts = "-m 'not integration'"

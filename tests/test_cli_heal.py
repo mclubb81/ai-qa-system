@@ -1,6 +1,7 @@
 
 from typer.testing import CliRunner
 
+import qa_agent.agents.healer as healer_module
 import qa_agent.cli as cli_module
 from qa_agent.agents.healer import HealResult
 from qa_agent.cli import app
@@ -19,7 +20,10 @@ def _patch_heal_script(monkeypatch, results_by_path):
     async def fake_heal_script(script_path, router, log_service, settings, **kwargs):
         return results_by_path[script_path]
 
-    monkeypatch.setattr(cli_module, "heal_script", fake_heal_script)
+    # heal_many() (used by both `heal --script` and `heal --all`) lives in
+    # agents/healer.py and calls heal_script as its own module global, so
+    # that's the reference that needs patching -- not cli_module.heal_script.
+    monkeypatch.setattr(healer_module, "heal_script", fake_heal_script)
 
 
 def test_heal_requires_script_or_all(monkeypatch):

@@ -133,3 +133,12 @@ async def heal_script(
     return HealResult(
         script_path, "healed", detail="Locators re-resolved from a fresh live run; script updated."
     )
+
+
+async def heal_many(
+    targets: list[Path], router: ModelRouter, log_service: LogService, settings: Settings
+) -> list[HealResult]:
+    """Heal several scripts in sequence (one live browser session each, so
+    running them concurrently wouldn't actually be faster). Shared by the
+    CLI's `heal --all` and the web UI's healer page."""
+    return [await heal_script(target, router, log_service, settings) for target in targets]

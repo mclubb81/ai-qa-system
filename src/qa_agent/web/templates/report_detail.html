@@ -1,0 +1,65 @@
+{% extends "base.html" %}
+{% block title %}Report {{ report.run_id }}{% endblock %}
+{% block content %}
+  <h1>{{ report.run_id }}</h1>
+  <div class="card">
+    <p><strong>Target:</strong> {{ report.target_url }}</p>
+    <p><strong>Status:</strong> <span class="badge badge-{{ report.overall_status }}">{{ report.overall_status }}</span></p>
+    <p class="field-hint">{{ report.started_at }} &rarr; {{ report.finished_at }}</p>
+    <p>{{ report.requirements_summary }}</p>
+  </div>
+
+  <h2>Test Cases</h2>
+  {% for result in report.test_results %}
+    <details class="card">
+      <summary>
+        {{ result.test_case_id }}: {{ result.title }}
+        <span class="badge badge-priority-{{ result.priority }}">{{ result.priority }}</span>
+        <span class="badge badge-{{ result.verdict or 'pending' }}">{{ result.verdict or "pending" }}</span>
+      </summary>
+      {% if result.reasoning %}<p>{{ result.reasoning }}</p>{% endif %}
+      <ol class="steps">
+        {% for step in result.steps %}
+          <li>
+            <span class="badge badge-{{ step.status }}">{{ step.status }}</span>
+            {{ step.description }}
+            {% if step.error %}<div class="banner banner-danger">{{ step.error }}</div>{% endif %}
+            {% if step.screenshot_path %}
+              <br>
+              <img class="screenshot"
+                   src="{{ url_for('main.report_screenshot', run_id=report.run_id, filename=step.screenshot_path.split('/')[-1]) }}"
+                   alt="Screenshot for step: {{ step.description }}">
+            {% endif %}
+          </li>
+        {% endfor %}
+      </ol>
+    </details>
+  {% else %}
+    <p class="field-hint">No test cases recorded.</p>
+  {% endfor %}
+
+  <h2>Bugs</h2>
+  {% for bug in report.bugs %}
+    <div class="card">
+      <h3>{{ bug.id }}: {{ bug.title }} <span class="badge badge-severity-{{ bug.severity }}">{{ bug.severity }}</span></h3>
+      <p><strong>Expected:</strong> {{ bug.expected }}</p>
+      <p><strong>Actual:</strong> {{ bug.actual }}</p>
+      <p><strong>Suspected root cause:</strong> {{ bug.suspected_root_cause }}</p>
+      <ol class="steps">
+        {% for step in bug.repro_steps %}<li>{{ step }}</li>{% endfor %}
+      </ol>
+      {% if bug.repro_script_path %}<p class="field-hint">Repro script: {{ bug.repro_script_path }}</p>{% endif %}
+    </div>
+  {% else %}
+    <p class="field-hint">No bugs flagged.</p>
+  {% endfor %}
+
+  {% if report.generated_scripts %}
+    <h2>Generated Scripts</h2>
+    <ul>
+      {% for script in report.generated_scripts %}
+        <li>{{ script.test_case_id }}: {{ script.script_path }}</li>
+      {% endfor %}
+    </ul>
+  {% endif %}
+{% endblock %}
