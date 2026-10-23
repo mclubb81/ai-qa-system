@@ -1,0 +1,44 @@
+[build-system]
+requires = ["setuptools>=68.0"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "qa-agent"
+version = "0.1.0"
+description = "AI-powered multi-agent QA system built with LangGraph and Playwright MCP"
+requires-python = ">=3.11"
+dependencies = [
+    "langgraph>=0.2.0",
+    "langchain>=0.3.0",
+    "langchain-groq>=0.2.0",
+    "langchain-mcp-adapters>=0.1.0",
+    "pydantic>=2.7",
+    "pydantic-settings>=2.4",
+    "python-dotenv>=1.0",
+    "typer>=0.12",
+    "rich>=13.7",
+    "jinja2>=3.1",
+]
+
+[project.optional-dependencies]
+anthropic = ["langchain-anthropic>=0.3.0"]
+openai = ["langchain-openai>=0.2.0"]
+google = ["langchain-google-genai>=2.0.0"]
+dev = ["pytest>=8.0", "pytest-asyncio>=0.23", "ruff>=0.6", "mypy>=1.10"]
+
+[project.scripts]
+qa-agent = "qa_agent.cli:app"
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.pytest.ini_options]
+addopts = "-m 'not integration'"
+# All tests here are plain functions (no test classes), so disable class
+# collection entirely -- avoids false-positive warnings on pydantic models
+# like TestCase/TestCaseResult that happen to start with "Test".
+python_classes = "DisableTestClassCollection"
+markers = [
+    "integration: tests that spawn real subprocesses (Playwright MCP) or call real LLM APIs",
+]
+asyncio_mode = "auto"

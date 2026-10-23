@@ -1,0 +1,57 @@
+from collections.abc import Awaitable, Callable
+from typing import Literal
+
+from langchain_core.language_models import BaseChatModel
+from langchain_core.messages import HumanMessage, SystemMessage
+from pydantic import BaseModel
+
+from qa_agent.graph.state import Bug, QAState
+from qa_agent.prompts.triage import TRIAGE_SYSTEM_PROMPT
+
+
+class TriageResponse(BaseModel):
+    title: str
+    severity: Literal["critical", "high", "medium", "low"]
+    repro_steps: list[str]
+    expected: str
+    actual: str
+    suspected_root_cause: str
+
+
+def make_triage_node(llm: BaseChatModel) -> Callable[[QAState], Awaitable[dict]]:
+    structured_llm = llm.with_structured_output(TriageResponse)
+
+    async def triage_node(state: QAState) -> dict:
+        triaged_ids = {b.related_test_case_id for b in state["bugs"]}
+        result = next(
+            r for r in state["test_results"] if r.suspected_bug and r.test_case_id not in triaged_ids
+        )
+
+        steps_text = "\n".join(
+            f"- [{step.status}] {step.description}" + (f" (error: {step.error})" if step.error else "")
+            for step in result.steps
+        )
+        user_message = (
+            f"Test case: {result.test_case_id} - {result.title}\n"
+            f"Analyzer reasoning: {result.reasoning}\n"
+            f"Step results:\n{steps_text}"
+        )
+        triage: TriageResponse = await structured_llm.ainvoke(
+            [SystemMessage(content=TRIAGE_SYSTEM_PROMPT), HumanMessage(content=user_message)]
+        )
+
+        screenshot_refs = [step.screenshot_path for step in result.steps if step.screenshot_path]
+        bug = Bug(
+            id=f"BUG-{len(state['bugs']) + 1:02d}",
+            title=triage.title,
+            severity=triage.severity,
+            related_test_case_id=result.test_case_id,
+            repro_steps=triage.repro_steps,
+            expected=triage.expected,
+            actual=triage.actual,
+            suspected_root_cause=triage.suspected_root_cause,
+            screenshot_refs=screenshot_refs,
+        )
+        return {"bugs": [*state["bugs"], bug]}
+
+    return triage_node
