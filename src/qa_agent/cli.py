@@ -5,7 +5,12 @@ import typer
 from rich.console import Console
 from rich.table import Table
 
+from qa_agent.config import get_settings
 from qa_agent.core.session import RunResult, run_qa_session
+from qa_agent.rag.client import get_qdrant_client
+from qa_agent.rag.collections import ensure_collection
+from qa_agent.rag.ingest import load_bug_records, load_doc_chunks
+from qa_agent.rag.service import RagService
 
 app = typer.Typer(add_completion=False)
 console = Console()
@@ -81,6 +86,54 @@ def run(
     )
     _print_summary(result)
     raise typer.Exit(0 if result.overall_status == "pass" else 1)
+
+
+@app.command("ingest-docs")
+def ingest_docs(
+    path: Path = typer.Argument(..., help="A .md/.txt file, or a directory of them, to index."),
+    chunk_size: int = typer.Option(1000, "--chunk-size", help="Max characters per chunk."),
+    chunk_overlap: int = typer.Option(100, "--chunk-overlap", help="Overlap between consecutive chunks."),
+) -> None:
+    """Ingest product docs into the qa_docs Qdrant collection for the Planner to retrieve from."""
+    rag_service = RagService.from_settings()
+    if not rag_service.enabled:
+        console.print(
+            "[red]RAG is not configured -- set QDRANT_URL, QDRANT_API_KEY, and GOOGLE_API_KEY in .env.[/red]"
+        )
+        raise typer.Exit(1)
+
+    settings = get_settings()
+    client = get_qdrant_client(settings)
+    assert client is not None, "rag_service.enabled already confirmed Qdrant is configured"
+    ensure_collection(client, settings.qdrant_docs_collection)
+
+    chunks = load_doc_chunks(path, chunk_size=chunk_size, overlap=chunk_overlap)
+    count = rag_service.upsert_docs(chunks)
+    console.print(f"Ingested {count} chunk(s) into '{settings.qdrant_docs_collection}'.")
+
+
+@app.command("ingest-bugs")
+def ingest_bugs(
+    path: Path = typer.Argument(
+        ..., help="A JSON file: a list of {id?, title, description, severity?} records."
+    ),
+) -> None:
+    """Seed the qa_bugs Qdrant collection for Triage's known-issue lookup."""
+    rag_service = RagService.from_settings()
+    if not rag_service.enabled:
+        console.print(
+            "[red]RAG is not configured -- set QDRANT_URL, QDRANT_API_KEY, and GOOGLE_API_KEY in .env.[/red]"
+        )
+        raise typer.Exit(1)
+
+    settings = get_settings()
+    client = get_qdrant_client(settings)
+    assert client is not None, "rag_service.enabled already confirmed Qdrant is configured"
+    ensure_collection(client, settings.qdrant_bugs_collection)
+
+    bugs = load_bug_records(path)
+    count = rag_service.upsert_bugs(bugs)
+    console.print(f"Ingested {count} bug(s) into '{settings.qdrant_bugs_collection}'.")
 
 
 if __name__ == "__main__":

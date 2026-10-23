@@ -1,0 +1,14 @@
+[
+  {
+    "id": "BUG-SEED-001",
+    "title": "Sign-up confirmation banner missing on slow connections",
+    "description": "On throttled network conditions, the 'Account created' banner never renders even though the account is created successfully.",
+    "severity": "medium"
+  },
+  {
+    "id": "BUG-SEED-002",
+    "title": "Password reset link does not expire",
+    "description": "A password reset link can still be used successfully more than 1 hour after being issued.",
+    "severity": "high"
+  }
+]

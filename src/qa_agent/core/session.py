@@ -7,6 +7,7 @@ from qa_agent.graph.build import build_graph
 from qa_agent.graph.state import Bug, QAState, TestCaseResult
 from qa_agent.llm import get_llm
 from qa_agent.mcp.playwright_client import PlaywrightMCPSession
+from qa_agent.rag.service import RagService
 from qa_agent.report.writer import overall_status
 from qa_agent.utils.ids import new_run_id, now_iso
 
@@ -39,6 +40,7 @@ async def run_qa_session(
     screenshot_dir.mkdir(parents=True, exist_ok=True)
 
     llm = get_llm(provider=provider, model=model)
+    rag_service = RagService.from_settings()
 
     initial_state: QAState = {
         "run_id": run_id,
@@ -49,6 +51,7 @@ async def run_qa_session(
         "screenshot_dir": str(screenshot_dir),
         "max_retries": max_retries,
         "retry_counts": {},
+        "retrieved_docs": None,
         "test_plan": None,
         "test_results": [],
         "bugs": [],
@@ -61,7 +64,7 @@ async def run_qa_session(
     async with PlaywrightMCPSession(headless=headless) as session:
         executor_agent = build_executor_agent(llm, session.tools)
         executor_node = make_executor_node(executor_agent)
-        graph = build_graph(executor_node, llm)
+        graph = build_graph(executor_node, llm, rag_service)
 
         final_state: QAState = await graph.ainvoke(
             initial_state, config={"recursion_limit": recursion_limit}
