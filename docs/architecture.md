@@ -67,12 +67,15 @@ Nested Pydantic models, also in `graph/state.py`:
 ## Graph wiring (`graph/build.py`)
 
 ```python
-def build_graph(executor_node, llm, rag_service, log_service) -> CompiledStateGraph:
+def build_graph(router, tools, rag_service, log_service, settings) -> CompiledStateGraph:
 ```
 
-- `executor_node` arrives pre-built (it closes over the executor's ReAct agent, which itself closes
-  over the live Playwright MCP tool session) -- everything else is built inside `build_graph` from
-  the shared `llm`.
+- `router` (a `ModelRouter`, see [Model selection & adaptive rate limiting](#model-selection--adaptive-rate-limiting-llm_router-)
+  below) owns provider/model selection for every LLM-calling node, including the Executor -- there's
+  no longer a single shared `llm` instance built once per run; each node asks the router for an LLM
+  per invocation, which may pick a different provider than the previous invocation (failover,
+  cost/latency ranking). `tools` are the live Playwright MCP tools, passed through to the Executor,
+  which builds its ReAct agent fresh per candidate provider attempt rather than once up front.
 - `rag_service`/`log_service` are always real instances, never `None` -- when RAG or Postgres
   logging isn't configured, they simply no-op (see [docs/rag.md](rag.md) and
   [docs/logging-and-config.md](logging-and-config.md)), so `build_graph` and every node factory
@@ -93,13 +96,17 @@ def build_graph(executor_node, llm, rag_service, log_service) -> CompiledStateGr
   returns a list (possibly empty) into `retrieved_docs`. No LLM call. See [docs/rag.md](rag.md).
 - **Planner** (`agents/planner.py::make_planner_node`) -- one structured-output LLM call
   (`TestPlanResponse` → `list[TestCase]`), prompted with the target URL, requirements, and any
-  retrieved docs formatted as a block. Wrapped in `logged_llm_call` for timing/size logging.
+  retrieved docs formatted as a block. Routed through `ModelRouter.call_with_selection` (which
+  itself wraps the actual attempt in `logged_llm_call` for rate-limit enforcement plus
+  timing/size logging).
 - **Executor** (`agents/executor.py::make_executor_node`) -- the only node with tools bound. Drives
   a LangChain ReAct agent (`langchain.agents.create_agent`) bound to live Playwright MCP tools,
-  running one pending test case's steps per invocation. After the call, it decodes any
-  `browser_take_screenshot` image blocks from the tool-call transcript (`extract_screenshots`),
-  flattens the tool-call/result transcript (`extract_tool_calls`, attached only to the first
-  `StepResult` to avoid duplicating it per step), and appends a `TestCaseResult`.
+  running one pending test case's steps per invocation. The ReAct agent is built fresh per
+  candidate-provider attempt (cached per `(provider, model)` within the node's closure, so a
+  provider already tried this run doesn't pay the graph-compile cost again). After the call, it
+  decodes any `browser_take_screenshot` image blocks from the tool-call transcript
+  (`extract_screenshots`), flattens the tool-call/result transcript (`extract_tool_calls`, attached
+  only to the first `StepResult` to avoid duplicating it per step), and appends a `TestCaseResult`.
 - **Analyzer** (`agents/analyzer.py::make_analyzer_node`) -- one structured-output LLM call
   (`AnalysisResponse`: verdict + reasoning + `suspected_bug`) per unjudged result. See "the retry
   loop" below for its `"flaky"` handling.
@@ -124,12 +131,52 @@ router-mediated loop driven by state shape, not a literal graph edge back to `ex
 ## Library entrypoint (`core/session.py::run_qa_session`)
 
 Resolves effective settings (`get_effective_settings()`, see
-[docs/logging-and-config.md](logging-and-config.md)), builds the LLM, `RagService`, and
-`LogService`, opens a `PlaywrightMCPSession`, builds the executor agent/node and the graph, and runs
-`graph.ainvoke(initial_state, config={"recursion_limit": recursion_limit})`. Logs `log_run_start`
-before entering the session and `log_run_end` in a `finally` block regardless of success or
-failure, then returns a `RunResult` (`run_id`, `overall_status`, report paths, `test_results`,
-`bugs`).
+[docs/logging-and-config.md](logging-and-config.md)), builds a `ModelRouter`, `RagService`, and
+`LogService`, opens a `PlaywrightMCPSession`, builds the graph from the router and the session's
+tools, and runs `graph.ainvoke(initial_state, config={"recursion_limit": recursion_limit})`. An
+explicit `provider`/`model` argument (or the CLI's `--provider`/`--model` flags) forces the router
+onto that one provider for the whole run, taking precedence over any configured
+`node_candidate_providers`; `QAState.llm_provider`/`llm_model` still carry the initial resolution
+for `log_run_start`/CLI display, but each node's *actual* per-attempt provider/model now comes from
+the router. Logs `log_run_start` before entering the session and `log_run_end` in a `finally` block
+regardless of success or failure, then returns a `RunResult` (`run_id`, `overall_status`, report
+paths, `test_results`, `bugs`).
+
+## Model selection & adaptive rate limiting (`llm_router/`, `control/`, `rate_limiter.py`)
+
+On top of the static per-provider request/output-size caps (`provider_limits`, enforced via
+`rate_limiter.py`), two independent PID control loops and a model-selection layer sit between every
+LLM-calling node and the actual provider call:
+
+- **`ModelRouter`** (`llm_router/model_router.py`) -- built once per run
+  (`ModelRouter.from_settings(...)`), it's what every LLM-calling node calls through instead of a
+  single shared `llm`. For a given node, it resolves a candidate provider list (`Settings.
+  node_candidate_providers`, falling back to `[llm_provider]` -- today's single-provider behavior
+  exactly, until a user opts in), ranks the available candidates by Loop B's learned preference,
+  and tries them in order: a `DailyQuotaExceededError` permanently excludes that provider for the
+  rest of the run; a native provider rate-limit error (classified by `llm_router/provider_errors.py`
+  per-SDK) feeds Loop A and excludes the provider only after several consecutive hits (a provider
+  merely being throttled might recover); any other exception propagates immediately, uncaught --
+  a real bug is never silently papered over by a provider switch.
+- **Loop A (adaptive rate limiting)** -- extends `rate_limiter.py` in place. A `PIDController` per
+  scope continuously narrows the *effective* rpm below the static `provider_limits` ceiling in
+  response to real rate-limit errors, and lets it climb back up once they stop (AIMD-like recovery).
+  Per-process, in-memory -- same lifetime as the static rate limiter, resets every `qa-agent`
+  invocation.
+- **Loop B (cost/latency ranking)** -- `llm_router/cost_latency.py`'s `CostLatencyRouter`, one
+  persisted `PIDController` per provider tracking a "badness" score from observed latency scaled by
+  an approximate `provider_cost_weights` entry. Used as a *tracking filter* (the new measurement is
+  fed as the PID setpoint, the controller's own prior output as the measured value), not classic
+  setpoint-tracking control, so the score decays toward recent performance rather than accumulating
+  forever. Persists across separate CLI runs via the `qa_config` Postgres DB (`llm_router/
+  state_store.py`'s `RouterStateStore`, under a reserved `_router_state/` key prefix that never
+  collides with an ordinary `Settings`-backed `qa_config` key), since a single run rarely issues
+  enough calls to converge on its own; degrades to neutral per-run behavior when `qa_config` isn't
+  configured.
+- **`control/pid.py::PIDController`** -- the generic, reusable primitive both loops build on. No
+  knowledge of providers, rate limits, or `qa_agent` config; see [docs/logging-and-config.md](logging-and-config.md)
+  for the full config surface (`node_candidate_providers`, `provider_cost_weights`,
+  `loop_a_pid_gains`/`loop_b_pid_gains`, and the rest of the tuning knobs).
 
 ## Reporting
 
@@ -186,10 +233,20 @@ flowchart TD
 ## Test coverage
 
 - `tests/test_router.py` -- routing decisions for every state shape, including the retry loop.
+  (Not to be confused with `llm_router/` -- that's provider/model selection, an unrelated concern
+  named to avoid colliding with this module.)
 - `tests/test_planner_node.py`, `tests/test_analyzer_node.py`, `tests/test_triage_node.py` -- node
-  behavior with hand-rolled stub LLMs.
+  behavior with hand-rolled stub LLMs, routed through a `_StubModelRouter` fake that just runs the
+  node's `build_call` against the stub LLM (single-candidate, no failover/ranking).
 - `tests/test_executor_parsing.py` -- `extract_tool_calls`/`extract_screenshots` against synthetic
   message transcripts.
+- `tests/test_pid_controller.py` -- the generic `PIDController`: P/I/D terms individually, output
+  clamping, anti-windup recovery, state round-tripping.
+- `tests/test_rate_limiter.py` -- static limits plus Loop A's effective-rpm narrowing.
+- `tests/test_cost_latency_router.py` -- Loop B's scoring/ranking/persistence via a fake store.
+- `tests/llm_router/test_provider_errors.py`, `tests/llm_router/test_model_router.py` -- per-SDK
+  rate-limit classification, and `ModelRouter`'s failover/candidate-exhaustion logic via a fake
+  `build_call` and a monkeypatched `get_llm`.
 - `tests/test_report.py`, `tests/test_llm_factory.py`, `tests/test_ids.py`.
 
 The repo has no mocking framework (no `unittest.mock`, no `pytest-mock`) -- tests use small

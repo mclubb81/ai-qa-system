@@ -4,7 +4,8 @@ from qa_agent.db.log_service import LogService
 from qa_agent.graph.state import TestCase
 from qa_agent.rag.models import RetrievedDoc
 
-_DISABLED_LOG_SERVICE = LogService(None, Settings())
+_SETTINGS = Settings()
+_DISABLED_LOG_SERVICE = LogService(None, _SETTINGS)
 
 
 class _StubStructuredLLM:
@@ -27,13 +28,25 @@ class _StubLLM:
         return self.structured_llm
 
 
+class _StubModelRouter:
+    """Single-candidate, no-failover fake: just runs build_call against
+    the given stub LLM, bypassing routing/PID/failover machinery entirely
+    so these tests still verify node behavior given one canned response."""
+
+    def __init__(self, llm):
+        self._llm = llm
+
+    async def call_with_selection(self, node_name, build_call, **kwargs):
+        return await build_call(self._llm)()
+
+
 async def test_planner_node_sets_test_plan():
     canned = TestPlanResponse(
         test_cases=[
             TestCase(id="TC-01", title="Page loads", priority="high", steps=["Navigate to the URL"]),
         ]
     )
-    node = make_planner_node(_StubLLM(canned), _DISABLED_LOG_SERVICE)
+    node = make_planner_node(_StubModelRouter(_StubLLM(canned)), _DISABLED_LOG_SERVICE, _SETTINGS)
 
     state = {
         "run_id": "test-run",
@@ -51,7 +64,7 @@ async def test_planner_node_sets_test_plan():
 async def test_planner_node_includes_retrieved_docs_in_prompt():
     canned = TestPlanResponse(test_cases=[])
     stub_llm = _StubLLM(canned)
-    node = make_planner_node(stub_llm, _DISABLED_LOG_SERVICE)
+    node = make_planner_node(_StubModelRouter(stub_llm), _DISABLED_LOG_SERVICE, _SETTINGS)
 
     state = {
         "run_id": "test-run",
@@ -71,7 +84,7 @@ async def test_planner_node_includes_retrieved_docs_in_prompt():
 async def test_planner_node_omits_docs_block_when_no_docs_retrieved():
     canned = TestPlanResponse(test_cases=[])
     stub_llm = _StubLLM(canned)
-    node = make_planner_node(stub_llm, _DISABLED_LOG_SERVICE)
+    node = make_planner_node(_StubModelRouter(stub_llm), _DISABLED_LOG_SERVICE, _SETTINGS)
 
     state = {
         "run_id": "test-run",

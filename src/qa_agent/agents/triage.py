@@ -1,13 +1,14 @@
 from collections.abc import Awaitable, Callable
-from typing import Literal
+from typing import Any, Literal
 
 from langchain_core.language_models import BaseChatModel
 from langchain_core.messages import HumanMessage, SystemMessage
 from pydantic import BaseModel
 
+from qa_agent.config import Settings
 from qa_agent.db.log_service import LogService
 from qa_agent.graph.state import Bug, QAState
-from qa_agent.llm_logging import logged_llm_call
+from qa_agent.llm_router.model_router import ModelRouter
 from qa_agent.prompts.triage import TRIAGE_SYSTEM_PROMPT
 from qa_agent.rag.service import RagService
 
@@ -22,10 +23,8 @@ class TriageResponse(BaseModel):
 
 
 def make_triage_node(
-    llm: BaseChatModel, rag_service: RagService, log_service: LogService
+    router: ModelRouter, rag_service: RagService, log_service: LogService, settings: Settings
 ) -> Callable[[QAState], Awaitable[dict]]:
-    structured_llm = llm.with_structured_output(TriageResponse)
-
     async def triage_node(state: QAState) -> dict:
         triaged_ids = {b.related_test_case_id for b in state["bugs"]}
         result = next(
@@ -51,15 +50,19 @@ def make_triage_node(
             f"Step results:\n{steps_text}"
             f"{similar_block}"
         )
-        triage: TriageResponse = await logged_llm_call(
-            lambda: structured_llm.ainvoke(
+
+        def build_call(llm: BaseChatModel) -> Callable[[], Awaitable[Any]]:
+            structured_llm = llm.with_structured_output(TriageResponse)
+            return lambda: structured_llm.ainvoke(
                 [SystemMessage(content=TRIAGE_SYSTEM_PROMPT), HumanMessage(content=user_message)]
-            ),
+            )
+
+        triage: TriageResponse = await router.call_with_selection(
+            "triage",
+            build_call,
             run_id=state["run_id"],
-            node_name="triage",
-            provider=state["llm_provider"],
-            model=state["llm_model"],
             log_service=log_service,
+            settings=settings,
             prompt_chars=len(user_message),
         )
 

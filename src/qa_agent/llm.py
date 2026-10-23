@@ -33,6 +33,12 @@ def get_llm(
     """
     settings = settings or get_effective_settings()
     resolved_provider, resolved_model = resolve_llm_provider_and_model(provider, model, settings)
+    # Cost control: cap response length per the configured provider_limits
+    # scope, independent of rate limiting -- this is what actually bounds
+    # spend once a provider is on a paid plan, not just a free tier.
+    max_output_tokens = settings.provider_limits.get(f"{resolved_provider}:chat", {}).get(
+        "max_output_tokens"
+    )
 
     if resolved_provider == "groq":
         from langchain_groq import ChatGroq
@@ -41,6 +47,7 @@ def get_llm(
             model=resolved_model,
             api_key=settings.groq_api_key,
             temperature=0,
+            max_tokens=max_output_tokens,
         )
 
     if resolved_provider == "google":
@@ -50,15 +57,20 @@ def get_llm(
             model=resolved_model,
             api_key=settings.google_api_key,
             temperature=0,
+            max_output_tokens=max_output_tokens,
         )
 
     if resolved_provider == "anthropic":
         from langchain_anthropic import ChatAnthropic
 
+        # ChatAnthropic requires an int max_tokens (its own default is
+        # 1024) -- fall back to that same default when no cap is
+        # configured, rather than passing None.
         return ChatAnthropic(
             model=resolved_model,
             api_key=settings.anthropic_api_key,
             temperature=0,
+            max_tokens=max_output_tokens if max_output_tokens is not None else 1024,
         )
 
     if resolved_provider == "openai":
@@ -68,6 +80,7 @@ def get_llm(
             model=resolved_model,
             api_key=settings.openai_api_key,
             temperature=0,
+            max_tokens=max_output_tokens,
         )
 
     raise ValueError(f"Unsupported LLM_PROVIDER: {resolved_provider!r}")
