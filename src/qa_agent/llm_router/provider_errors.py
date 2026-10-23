@@ -27,6 +27,18 @@ def is_rate_limit_error(provider: str, exc: BaseException) -> bool:
             from google.genai.errors import ClientError
 
             return isinstance(exc, ClientError) and getattr(exc, "code", None) == 429
+        if provider == "huggingface":
+            from huggingface_hub.errors import HfHubHTTPError
+
+            # Same situation as Google: HfHubHTTPError spans the whole 4xx
+            # range (ChatHuggingFace/HuggingFaceEndpoint call through
+            # huggingface_hub's InferenceClient, which raises this on any
+            # non-2xx), so an explicit status-code check is required.
+            return (
+                isinstance(exc, HfHubHTTPError)
+                and getattr(exc, "response", None) is not None
+                and exc.response.status_code == 429
+            )
     except ImportError:
         return False
     return False

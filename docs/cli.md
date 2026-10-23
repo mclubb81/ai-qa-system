@@ -11,6 +11,7 @@ command, see [docs/architecture.md](architecture.md), [docs/rag.md](rag.md), or
 flowchart LR
     subgraph CLI ["qa-agent CLI"]
         run["run"]
+        heal["heal"]
         ingestDocs["ingest-docs"]
         ingestBugs["ingest-bugs"]
         configCmds["config set / get / list"]
@@ -18,6 +19,8 @@ flowchart LR
     end
 
     run --> Graph["LangGraph pipeline\n(see docs/architecture.md)"]
+    Graph -. "generated_tests/*.py + *.json" .-> GeneratedTests[("generated_tests/")]
+    heal --> GeneratedTests
     ingestDocs --> QdrantDocs[("Qdrant: qa_docs")]
     ingestBugs --> QdrantBugs[("Qdrant: qa_bugs")]
     configCmds --> ConfigDB[("Postgres: qa_config")]
@@ -36,15 +39,16 @@ Run an AI-powered QA session against a target URL.
 |---|---|---|
 | `--url` | *(required)* | Target URL to test. |
 | `--requirements` | *(required)* | Natural-language requirements, or a path to a file containing them. |
-| `--provider` | from config/settings | LLM provider: `groq` (default), `google`, `anthropic`, or `openai`. |
+| `--provider` | from config/settings | LLM provider: `groq` (default), `google`, `anthropic`, `openai`, or `huggingface`. |
 | `--model` | provider's default | Override the provider's default model. |
 | `--headless` / `--no-headless` | from config/settings | Run the browser headless. |
 | `--max-retries` | from config/settings | Retries for test cases judged `"flaky"`. |
 | `--reports-dir` | from config/settings | Directory to write reports into. |
+| `--generate-regression-scripts` / `--no-generate-regression-scripts` | from config/settings | Generate a standalone Playwright regression script for every passing test case, under `generated_tests/`. |
 | `-v` / `--verbose` | off | Verbose output. |
 
-Precedence for `--headless`/`--max-retries`/`--reports-dir`: **CLI flag (if passed) → `qa_config`
-DB (if reachable) → `.env`/hardcoded default** -- see
+Precedence for `--headless`/`--max-retries`/`--reports-dir`/`--generate-regression-scripts`: **CLI
+flag (if passed) → `qa_config` DB (if reachable) → `.env`/hardcoded default** -- see
 [docs/logging-and-config.md](logging-and-config.md#config-precedence-chain).
 
 ```bash
@@ -52,9 +56,40 @@ qa-agent run --url https://example.com --requirements "Check the page loads and 
 
 qa-agent run --url https://myapp.com --requirements ./examples/requirements_example.md \
   --provider google --model gemini-2.5-flash
+
+qa-agent run --url https://myapp.com --requirements ./examples/requirements_example.md \
+  --generate-regression-scripts
 ```
 
 Exit code: `0` if `overall_status == "pass"`, else `1`.
+
+## `qa-agent heal`
+
+Re-execute a generated regression script's original steps against the live app and, if it still
+passes, re-synthesize its locators from a fresh accessibility-tree snapshot. Reads the script's
+JSON sidecar, not the original run's state -- can be run long after, and independent of, the
+`qa-agent run` that produced it. See
+[docs/architecture.md#generator--healer](architecture.md#generator--healer).
+
+| Flag | Default | Description |
+|---|---|---|
+| `--script` | *(one of `--script`/`--all` required)* | Path to one `generated_tests/<id>.py` script to heal. |
+| `--all` | off | Heal every generated script found under `--reports-dir`. |
+| `--reports-dir` | from config/settings | Where to scan for generated scripts (used with `--all`). |
+| `--provider` | from config/settings | LLM provider override for healing. |
+| `--model` | provider's default | Model override for healing. |
+
+```bash
+qa-agent heal --script reports/20260101T000000Z-abcd1234/generated_tests/TC-01.py
+qa-agent heal --all
+```
+
+Prints one status line per script: `healed` (green, locators re-resolved and file updated),
+`still_valid` (dim, re-execution passed and nothing changed), or `regression_detected` (red, the
+live re-execution itself failed -- the file is left untouched).
+
+Exit code: `0` if every script was `healed`/`still_valid`; `1` if any was `regression_detected`, or
+if neither `--script` nor `--all` was given, or if no generated scripts were found.
 
 ## `qa-agent ingest-docs`
 
@@ -149,6 +184,7 @@ qa-agent db-init
 | Command | Exit `0` | Exit `1` |
 |---|---|---|
 | `run` | `overall_status == "pass"` | `overall_status` is `"fail"` or `"flaky"` |
+| `heal` | every script `healed`/`still_valid` | any `regression_detected`, no scripts found, or neither `--script` nor `--all` given |
 | `ingest-docs` / `ingest-bugs` | ingestion succeeded | RAG not configured |
 | `config set` | value stored | config DB not configured |
 | `config get` | key found | key not set (DB unreachable or just unset) |

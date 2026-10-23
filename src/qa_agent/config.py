@@ -19,9 +19,22 @@ class Settings(BaseSettings):
     openai_api_key: str | None = None
     openai_model: str = "gpt-4o"
 
+    # Hugging Face Inference Providers (serverless, routes to many underlying
+    # backends) -- used for the pipeline's code-generation-heavy work
+    # (triage repro scripts, codegen, healer), see node_candidate_providers.
+    huggingface_api_key: str | None = None
+    huggingface_model: str = "Qwen/Qwen2.5-Coder-32B-Instruct"
+
     playwright_headless: bool = True
     reports_dir: str = "reports"
     max_retries: int = 1
+
+    # Generator: writes a standalone Playwright regression script for every
+    # passing test case (opt-in -- adds an LLM call per passing test case,
+    # much higher volume than bug triage). Healer reads these scripts' JSON
+    # sidecars later, independent of any particular run.
+    generate_regression_scripts: bool = False
+    generated_tests_dirname: str = "generated_tests"
 
     # RAG (optional) -- grounds the Planner in indexed docs and lets Triage
     # look up similar known bugs. Leave unset to run without RAG.
@@ -56,16 +69,31 @@ class Settings(BaseSettings):
             "anthropic:chat": {"rpm": 50, "rpd": 1000, "max_output_tokens": 1024},
             "openai:chat": {"rpm": 60, "rpd": 1000, "max_output_tokens": 1024},
             "google:embedding": {"rpm": 100, "rpd": 1500},
+            # Hugging Face's serverless Inference Providers free allowance is
+            # small/shared across backends, hence the conservative rpm/rpd.
+            # max_output_tokens is 4x the other providers' default since this
+            # provider is used for full-script synthesis, not short JSON
+            # fields (triage repro scripts, codegen, healer).
+            "huggingface:chat": {"rpm": 10, "rpd": 300, "max_output_tokens": 4096},
         }
     )
 
     # Model selection: task-complexity baseline / opt-in candidate lists.
-    # Empty dict -> every node falls back to [llm_provider], i.e. today's
-    # single-global-provider behavior exactly. Keys are node names
-    # ("planner", "analyzer", "triage", "executor"); values are ordered
-    # provider-name lists -- most-preferred first, which also serves as
-    # the tie-break prior when Loop B (below) has no learned preference.
-    node_candidate_providers: dict[str, list[str]] = Field(default_factory=dict)
+    # Keys are node names ("planner", "analyzer", "triage", "executor",
+    # "codegen", "healer"); values are ordered provider-name lists --
+    # most-preferred first, which also serves as the tie-break prior when
+    # Loop B (below) has no learned preference. Hugging Face is preferred
+    # for triage/codegen/healer since they do the heaviest reasoning/code
+    # synthesis work; if HUGGINGFACE_API_KEY isn't set, ModelRouter's
+    # existing failover transparently falls back to groq, so this is safe
+    # to ship as a default even for operators who haven't configured it.
+    node_candidate_providers: dict[str, list[str]] = Field(
+        default_factory=lambda: {
+            "triage": ["huggingface", "groq"],
+            "codegen": ["huggingface", "groq"],
+            "healer": ["huggingface", "groq"],
+        }
+    )
 
     # Loop B (model-selection cost/latency weighting): an approximate,
     # admittedly-not-real-dollars relative cost weight per provider, since

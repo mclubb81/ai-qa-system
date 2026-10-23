@@ -43,6 +43,18 @@ class Bug(BaseModel):
     suspected_root_cause: str
     screenshot_refs: list[str] = Field(default_factory=list)
     similar_bug_refs: list[str] = Field(default_factory=list)
+    repro_script_path: str | None = None
+
+
+class GeneratedScript(BaseModel):
+    """A standalone Playwright regression script for a passing test case,
+    written by the codegen node (and later re-validated/re-synthesized by
+    Healer, which reads sidecar_path independent of any particular run)."""
+
+    test_case_id: str
+    title: str
+    script_path: str
+    sidecar_path: str
 
 
 class QAState(TypedDict):
@@ -63,9 +75,14 @@ class QAState(TypedDict):
     bugs: list[Bug]
     errors: list[str]
 
+    generated_scripts: list[GeneratedScript]
+    generate_regression_scripts: bool
+
     started_at: str
     report_markdown_path: str | None
     report_json_path: str | None
 
 
-NodeName = Literal["retriever", "planner", "executor", "analyzer", "triage", "report"]
+NodeName = Literal[
+    "retriever", "planner", "executor", "analyzer", "triage", "codegen", "report"
+]

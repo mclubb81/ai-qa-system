@@ -1,4 +1,6 @@
+import json
 from collections.abc import Awaitable, Callable
+from pathlib import Path
 from typing import Any, Literal
 
 from langchain_core.language_models import BaseChatModel
@@ -12,6 +14,11 @@ from qa_agent.llm_router.model_router import ModelRouter
 from qa_agent.prompts.triage import TRIAGE_SYSTEM_PROMPT
 from qa_agent.rag.service import RagService
 
+# Same truncation spirit as agents/codegen.py and
+# agents/executor.py::_summarize_tool_message -- defends against a
+# pathologically long transcript blowing out the prompt/cost budget.
+_TRANSCRIPT_CHAR_LIMIT = 6000
+
 
 class TriageResponse(BaseModel):
     title: str
@@ -20,6 +27,7 @@ class TriageResponse(BaseModel):
     expected: str
     actual: str
     suspected_root_cause: str
+    repro_script: str
 
 
 def make_triage_node(
@@ -44,11 +52,23 @@ def make_triage_node(
             else "\n\nSimilar previously known bugs: none found."
         )
 
+        transcript = result.steps[0].tool_calls if result.steps else []
+        transcript_block = (
+            "\n\nRaw tool-call transcript from the failing run (for "
+            "repro-script synthesis; `ref` values are ephemeral "
+            "accessibility-tree ids from that one run's snapshot and MUST "
+            "NOT be used as Playwright locators -- derive role/text-based "
+            "locators from each call's human-readable `element` description "
+            f"instead):\n{json.dumps(transcript, indent=2)[:_TRANSCRIPT_CHAR_LIMIT]}"
+        )
+
         user_message = (
             f"Test case: {result.test_case_id} - {result.title}\n"
+            f"Target URL: {state['target_url']}\n"
             f"Analyzer reasoning: {result.reasoning}\n"
             f"Step results:\n{steps_text}"
             f"{similar_block}"
+            f"{transcript_block}"
         )
 
         def build_call(llm: BaseChatModel) -> Callable[[], Awaitable[Any]]:
@@ -67,8 +87,9 @@ def make_triage_node(
         )
 
         screenshot_refs = [step.screenshot_path for step in result.steps if step.screenshot_path]
+        bug_id = f"BUG-{len(state['bugs']) + 1:02d}"
         bug = Bug(
-            id=f"BUG-{len(state['bugs']) + 1:02d}",
+            id=bug_id,
             title=triage.title,
             severity=triage.severity,
             related_test_case_id=result.test_case_id,
@@ -79,6 +100,14 @@ def make_triage_node(
             screenshot_refs=screenshot_refs,
             similar_bug_refs=[b.id for b in similar_bugs],
         )
+
+        run_dir = Path(state["screenshot_dir"]).parent
+        scripts_dir = run_dir / settings.generated_tests_dirname
+        scripts_dir.mkdir(parents=True, exist_ok=True)
+        repro_filename = f"{bug_id}_repro.py"
+        (scripts_dir / repro_filename).write_text(triage.repro_script)
+        bug.repro_script_path = f"{settings.generated_tests_dirname}/{repro_filename}"
+
         return {"bugs": [*state["bugs"], bug]}
 
     return triage_node

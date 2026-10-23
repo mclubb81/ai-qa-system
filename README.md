@@ -5,7 +5,9 @@ and the official [Playwright MCP](https://playwright.dev/mcp/introduction) serve
 
 Point it at a URL and a set of requirements, and a Coordinator agent routes work through a
 Planner → Executor → Analyzer → Bug Triage loop until everything is resolved, then writes a
-Markdown + JSON report.
+Markdown + JSON report. An opt-in Generator step can also turn passing runs into standalone
+Playwright regression scripts, which a separate Healer command can later re-validate and
+re-synthesize against a live app without any further LLM-pipeline run.
 
 ## Architecture
 
@@ -19,7 +21,16 @@ Markdown + JSON report.
   case's steps at a time.
 - **Analyzer** -- judges each executed test case pass/fail/flaky, with a deterministic
   threshold-based retry for "flaky" verdicts.
-- **Bug Triage** -- turns suspected-bug results into structured, GitHub-issue-ready bug reports.
+- **Bug Triage** -- turns suspected-bug results into structured, GitHub-issue-ready bug reports,
+  and also synthesizes a standalone Playwright repro script for each one.
+- **Generator** (`agents/codegen.py`, opt-in via `--generate-regression-scripts`) -- for each
+  *passing* test case, synthesizes a standalone Playwright regression script + a JSON sidecar
+  (original steps, target URL) under `generated_tests/`, so the test can be re-run cheaply without
+  the LLM pipeline. Not pictured below as a mandatory step -- it only runs when enabled.
+- **Healer** (`qa-agent heal`, standalone CLI command, not a graph node) -- re-executes a generated
+  script's original steps live, and if the app still behaves correctly but the UI changed, rewrites
+  the script with freshly-resolved locators. If the app's behavior actually regressed, it reports
+  that instead of silently rewriting the script.
 - **Retriever** (optional RAG) -- runs once before the Planner. When Qdrant/RAG is configured, it
   retrieves relevant indexed product docs for the Planner to ground test cases in; it degrades
   silently (returns no context) when RAG isn't configured.
@@ -44,11 +55,18 @@ flowchart TD
     Analyzer -->|"flaky, retries left"| Coordinator
     Analyzer --> Coordinator
 
-    Coordinator -->|"flagged bug, untriaged"| Triage["Bug Triage"]
+    Coordinator -->|"flagged bug, untriaged"| Triage["Bug Triage\n(+ repro script)"]
     Triage --> Coordinator
+
+    Coordinator -->|"passing result, codegen on"| Codegen["Generator\n(optional, opt-in)"]
+    Codegen --> Coordinator
 
     Coordinator -->|"otherwise"| Report["Report writer\n(report.md + report.json)"]
     Report --> End(["Done"])
+
+    GeneratedTests[("generated_tests/\n*.py + *.json sidecar")] -. "qa-agent heal\n(separate command, not in this graph)" .-> Healer["Healer"]
+    Codegen -.-> GeneratedTests
+    Triage -.->|"repro script"| GeneratedTests
 
     Retriever -. "retrieve_docs()" .-> Qdrant[("Qdrant\nqa_docs / qa_bugs")]
     Triage -. "find_similar_bugs()" .-> Qdrant
@@ -99,6 +117,12 @@ CLI. Defaults to **Groq**, which has a generous free API tier with good tool-cal
 | `google` | Yes | `pip install -e ".[google]"` | https://aistudio.google.com/apikey |
 | `anthropic` | No | `pip install -e ".[anthropic]"` | https://console.anthropic.com |
 | `openai` | No | `pip install -e ".[openai]"` | https://platform.openai.com |
+| `huggingface` | Yes (free Inference Providers credits) | `pip install -e ".[huggingface]"` | https://huggingface.co/settings/tokens |
+
+Bug Triage, the Generator, and Healer default to preferring `huggingface` (see
+`node_candidate_providers` in [docs/logging-and-config.md](docs/logging-and-config.md)) since
+they do the pipeline's heaviest reasoning and code-synthesis work -- if `HUGGINGFACE_API_KEY`
+isn't set, they automatically fail over to `groq`.
 
 ## Usage
 
@@ -111,6 +135,33 @@ qa-agent run --url https://myapp.com --requirements ./examples/requirements_exam
 
 Each run writes `reports/<run-id>/report.md`, `report.json`, and any captured screenshots under
 `reports/<run-id>/screenshots/`.
+
+## Generator & Healer (optional)
+
+Turn a passing run into a cheap, LLM-free regression suite, and keep it working as the app's UI
+changes:
+
+```bash
+# Generate a standalone Playwright script for every passing test case
+qa-agent run --url https://example.com --requirements "..." --generate-regression-scripts
+```
+
+Each passing test case gets `reports/<run-id>/generated_tests/<test-case-id>.py` (a self-contained
+`playwright.sync_api` script, runnable on its own) plus a `.json` sidecar recording its original
+steps and target URL. Every flagged bug also gets a `<bug-id>_repro.py` reproduction script in the
+same directory.
+
+```bash
+# Re-validate one script, or every script under reports/, against the live app
+qa-agent heal --script reports/<run-id>/generated_tests/TC-01.py
+qa-agent heal --all
+```
+
+`heal` re-runs a script's original steps live through Playwright MCP. If the app still behaves
+correctly but its UI changed (e.g. a button's label changed), it rewrites the script with
+freshly-resolved locators (`healed`). If the app's actual behavior broke, it reports that instead
+and leaves the file untouched (`regression_detected`, non-zero exit code) -- it never silently
+papers over a real regression.
 
 ## RAG (optional)
 

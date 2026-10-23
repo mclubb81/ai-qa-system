@@ -35,6 +35,7 @@ def write_report(state: QAState, run_dir: Path) -> ReportPaths:
         overall_status=status,
         test_results=state["test_results"],
         bugs=state["bugs"],
+        generated_scripts=state["generated_scripts"],
     )
 
     markdown_path = run_dir / "report.md"

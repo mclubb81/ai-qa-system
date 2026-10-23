@@ -6,7 +6,7 @@ from pydantic import BaseModel
 from qa_agent.config import get_effective_settings
 from qa_agent.db.log_service import LogService
 from qa_agent.graph.build import build_graph
-from qa_agent.graph.state import Bug, QAState, TestCaseResult
+from qa_agent.graph.state import Bug, GeneratedScript, QAState, TestCaseResult
 from qa_agent.llm import resolve_llm_provider_and_model
 from qa_agent.llm_router.model_router import ModelRouter
 from qa_agent.mcp.playwright_client import PlaywrightMCPSession
@@ -22,6 +22,7 @@ class RunResult(BaseModel):
     report_json_path: str | None
     test_results: list[TestCaseResult]
     bugs: list[Bug]
+    generated_scripts: list[GeneratedScript]
 
 
 async def run_qa_session(
@@ -34,6 +35,7 @@ async def run_qa_session(
     max_retries: int = 1,
     reports_dir: str | Path = "reports",
     recursion_limit: int = 250,
+    generate_regression_scripts: bool = False,
 ) -> RunResult:
     """Public library entrypoint. The CLI is a thin wrapper over this --
     a future API/UI layer can call it directly instead."""
@@ -68,6 +70,8 @@ async def run_qa_session(
         "test_results": [],
         "bugs": [],
         "errors": [],
+        "generated_scripts": [],
+        "generate_regression_scripts": generate_regression_scripts,
         "started_at": started_at,
         "report_markdown_path": None,
         "report_json_path": None,
@@ -113,4 +117,5 @@ async def run_qa_session(
         report_json_path=final_state["report_json_path"],
         test_results=final_state["test_results"],
         bugs=final_state["bugs"],
+        generated_scripts=final_state["generated_scripts"],
     )

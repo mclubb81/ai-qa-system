@@ -1,6 +1,12 @@
 from pathlib import Path
 
-from qa_agent.graph.state import Bug, QAState, StepResult, TestCaseResult
+from qa_agent.graph.state import (
+    Bug,
+    GeneratedScript,
+    QAState,
+    StepResult,
+    TestCaseResult,
+)
 from qa_agent.report.json_writer import write_json
 from qa_agent.report.markdown import render_markdown
 from qa_agent.report.models import QAReport
@@ -29,6 +35,13 @@ def _sample_report() -> QAReport:
         actual="No title element found",
         suspected_root_cause="Template missing <title> tag",
         screenshot_refs=["screenshots/TC-01-1.png"],
+        repro_script_path="generated_tests/BUG-01_repro.py",
+    )
+    generated_script = GeneratedScript(
+        test_case_id="TC-02",
+        title="Checkout flow",
+        script_path="generated_tests/TC-02.py",
+        sidecar_path="generated_tests/TC-02.json",
     )
     return QAReport(
         run_id="20260101T000000Z",
@@ -39,6 +52,7 @@ def _sample_report() -> QAReport:
         overall_status="fail",
         test_results=[result],
         bugs=[bug],
+        generated_scripts=[generated_script],
     )
 
 
@@ -49,6 +63,8 @@ def test_render_markdown_contains_table_and_bug():
     assert "BUG-01" in md
     assert "Missing page title" in md
     assert "screenshots/TC-01-1.png" in md
+    assert "generated_tests/BUG-01_repro.py" in md
+    assert "generated_tests/TC-02.py" in md
 
 
 def test_write_json_roundtrip(tmp_path: Path):
@@ -74,6 +90,7 @@ def test_write_report_creates_both_files(tmp_path: Path):
         "test_results": _sample_report().test_results,
         "bugs": _sample_report().bugs,
         "errors": [],
+        "generated_scripts": _sample_report().generated_scripts,
         "started_at": "2026-01-01T00:00:00Z",
         "report_markdown_path": None,
         "report_json_path": None,
