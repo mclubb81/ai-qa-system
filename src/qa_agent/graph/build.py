@@ -13,6 +13,7 @@ from qa_agent.agents.executor import make_executor_node
 from qa_agent.agents.planner import make_planner_node
 from qa_agent.agents.retriever import make_retriever_node
 from qa_agent.agents.triage import make_triage_node
+from qa_agent.agents.verifier import make_verifier_node
 from qa_agent.config import Settings
 from qa_agent.db.log_service import LogService
 from qa_agent.graph.router import route
@@ -102,6 +103,10 @@ def build_graph(
         _with_node_logging("analyzer", make_analyzer_node(router, log_service, settings), log_service),
     )
     graph.add_node(
+        "verifier",
+        _with_node_logging("verifier", make_verifier_node(settings, log_service), log_service),
+    )
+    graph.add_node(
         "triage",
         _with_node_logging(
             "triage", make_triage_node(router, rag_service, log_service, settings), log_service
@@ -118,13 +123,14 @@ def build_graph(
         "planner": "planner",
         "executor": "executor",
         "analyzer": "analyzer",
+        "verifier": "verifier",
         "triage": "triage",
         "codegen": "codegen",
         "report": "report",
     }
 
     graph.set_conditional_entry_point(route, route_map)
-    for node in ("retriever", "planner", "executor", "analyzer", "triage", "codegen"):
+    for node in ("retriever", "planner", "executor", "analyzer", "verifier", "triage", "codegen"):
         graph.add_conditional_edges(node, route, route_map)
     graph.add_edge("report", END)
 

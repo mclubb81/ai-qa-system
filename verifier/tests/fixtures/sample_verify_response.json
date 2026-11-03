@@ -1,0 +1,13 @@
+{
+  "consistent": false,
+  "violations": [
+    {
+      "law": "functor_consistency",
+      "scope": "tc-2",
+      "severity": "error",
+      "message": "Analyzer verdict 'pass' is inconsistent with step evidence (expected 'fail')",
+      "corrected_verdict": "fail"
+    }
+  ],
+  "checked_at": "2026-11-03T10:01:06Z"
+}
