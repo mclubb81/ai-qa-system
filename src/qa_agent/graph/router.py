@@ -26,6 +26,12 @@ def route(state: QAState) -> NodeName:
     if unanalyzed:
         return "analyzer"
 
+    unverified = [
+        r for r in state["test_results"] if r.test_case_id not in state["verified_test_case_ids"]
+    ]
+    if unverified or not state["pipeline_verified"]:
+        return "verifier"
+
     triaged_ids = {b.related_test_case_id for b in state["bugs"]}
     flagged = [
         r

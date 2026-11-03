@@ -25,6 +25,18 @@ class Settings(BaseSettings):
     huggingface_api_key: str | None = None
     huggingface_model: str = "Qwen/Qwen2.5-Coder-32B-Instruct"
 
+    # Independent verification service (verifier/, Rust) -- see
+    # agents/verifier.py. When disabled, the verifier node is a no-op
+    # pass-through (no HTTP call at all).
+    verifier_enabled: bool = True
+    verifier_service_url: str = "http://localhost:8787"
+    verifier_timeout_seconds: float = 5.0
+    # If the verifier service is unreachable or returns a malformed
+    # response: False (default) logs and proceeds as if no violations were
+    # found, so a down/new service doesn't brick existing runs. True
+    # re-raises instead.
+    verifier_fail_closed: bool = False
+
     playwright_headless: bool = True
     reports_dir: str = "reports"
     max_retries: int = 1

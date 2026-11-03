@@ -28,12 +28,15 @@ checks state shape in a fixed order:
 2. `state["test_plan"] is None` → `"planner"`.
 3. Any test case in `test_plan` with no matching `test_results` entry → `"executor"`.
 4. Any `test_results` entry with `verdict is None` → `"analyzer"`.
-5. Any `test_results` entry with `suspected_bug=True` and no matching `bugs` entry → `"triage"`.
-6. If `state["generate_regression_scripts"]` is true, any `test_results` entry with
+5. Any analyzed `test_results` entry whose `test_case_id` isn't yet in
+   `verified_test_case_ids`, or `not state["pipeline_verified"]` → `"verifier"` (see
+   [Independent verification](#independent-verification-verifier) below).
+6. Any `test_results` entry with `suspected_bug=True` and no matching `bugs` entry → `"triage"`.
+7. If `state["generate_regression_scripts"]` is true, any `test_results` entry with
    `verdict == "pass"` and no matching `generated_scripts` entry → `"codegen"`.
-7. Otherwise → `"report"`.
+8. Otherwise → `"report"`.
 
-Because `route` is re-invoked after *every* node (via `add_conditional_edges` on all six worker
+Because `route` is re-invoked after *every* node (via `add_conditional_edges` on all seven worker
 nodes, plus as the conditional entry point), there's no need for explicit "next node" edges between
 workers -- the graph always routes back through the Coordinator, which re-derives the correct next
 step from whatever the previous node changed in state.
@@ -58,6 +61,9 @@ Defined in `src/qa_agent/graph/state.py` as a `TypedDict`:
 | `errors` | `list[str]` | Reserved; not currently written to by any node. |
 | `generated_scripts` | `list[GeneratedScript]` | Grows as the Generator (`codegen` node) processes passing results; empty unless `generate_regression_scripts` is true. |
 | `generate_regression_scripts` | `bool` | Opt-in flag, set once at session start, read directly by `route()` to decide whether to visit `codegen` at all. |
+| `verified_test_case_ids` | `list[str]` | Test case ids the Verifier has already checked; read directly by `route()`. |
+| `pipeline_verified` | `bool` | Whether the Verifier's structural/composition check has run yet this session (it only needs to run once -- the test plan doesn't change mid-run). |
+| `verification_violations` | `list[VerificationViolation]` | Grows as the Verifier finds (or corrects) issues; carried into the final `QAReport`. |
 | `started_at` | `str` | ISO timestamp, set once at session start. |
 | `report_markdown_path`, `report_json_path` | `str \| None` | Set by the `report` node at the end of a run. |
 
@@ -68,6 +74,10 @@ Nested Pydantic models, also in `graph/state.py`:
 - **`TestCaseResult`**: `test_case_id`, `title`, `priority`, `steps: list[StepResult]`, `verdict` (`"pass"|"fail"|"flaky"|None`), `reasoning`, `suspected_bug`, `started_at`, `finished_at`.
 - **`Bug`**: `id` (`BUG-NN`), `title`, `severity`, `related_test_case_id`, `repro_steps`, `expected`, `actual`, `suspected_root_cause`, `screenshot_refs`, `similar_bug_refs` (populated from RAG lookups, see [docs/rag.md](rag.md)), `repro_script_path` (set by Triage, see [Generator & Healer](#generator--healer) below).
 - **`GeneratedScript`**: `test_case_id`, `title`, `script_path`, `sidecar_path` -- written by the `codegen` node for each passing test case.
+- **`VerificationViolation`**: `law` (`"functor_consistency"|"composition_contract"`), `scope`
+  (a test case id, or `"pipeline"` for a structural finding), `severity` (`"error"|"warning"`),
+  `message`, `corrected_verdict` (set only on `functor_consistency` violations) -- written by the
+  `verifier` node, see [Independent verification](#independent-verification-verifier) below.
 
 ## Graph wiring (`graph/build.py`)
 
@@ -91,8 +101,8 @@ def build_graph(router, tools, rag_service, log_service, settings) -> CompiledSt
   This is the one error-logging boundary in the whole pipeline that does not swallow exceptions --
   a real failure still propagates all the way to the CLI, which exits non-zero.
 - `graph.set_conditional_entry_point(route, route_map)` plus `graph.add_conditional_edges(node, route, route_map)`
-  for every worker node (`retriever`, `planner`, `executor`, `analyzer`, `triage`, `codegen`) routes
-  every transition through the Coordinator. `report` has a plain edge to `END`.
+  for every worker node (`retriever`, `planner`, `executor`, `analyzer`, `verifier`, `triage`,
+  `codegen`) routes every transition through the Coordinator. `report` has a plain edge to `END`.
 
 ## Node-by-node reference
 
@@ -115,6 +125,9 @@ def build_graph(router, tools, rag_service, log_service, settings) -> CompiledSt
 - **Analyzer** (`agents/analyzer.py::make_analyzer_node`) -- one structured-output LLM call
   (`AnalysisResponse`: verdict + reasoning + `suspected_bug`) per unjudged result. See "the retry
   loop" below for its `"flaky"` handling.
+- **Verifier** (`agents/verifier.py::make_verifier_node`) -- no LLM call. POSTs the current
+  `test_plan`/`test_results` to the Rust `verifier/` service and applies its findings; see
+  [Independent verification](#independent-verification-verifier) below for the full design.
 - **Bug Triage** (`agents/triage.py::make_triage_node`) -- for a flagged, untriaged result: calls
   `rag_service.find_similar_bugs(f"{title}\n{reasoning}")` for context, then one structured-output
   LLM call (`TriageResponse`, now including a `repro_script` field) to produce a GitHub-issue-shaped
@@ -226,11 +239,46 @@ LLM-calling node and the actual provider call:
 
 ## Reporting
 
-`report/writer.py::overall_status(state)`: `"fail"` if any test case failed; `"pass"` if every
-verdict is `"pass"`; otherwise `"flaky"` (or `"fail"` if there are no verdicts at all, e.g. an empty
-plan). `write_report(state, run_dir)` writes `report.md` and `report.json` under
-`reports/<run_id>/`, alongside any screenshots the Executor saved under
+`report/writer.py::overall_status(state)`: `"fail"` if any `verification_violations` entry has
+`severity == "error"` (checked first, overriding everything below); else `"fail"` if any test case
+failed; `"pass"` if every verdict is `"pass"`; otherwise `"flaky"` (or `"fail"` if there are no
+verdicts at all, e.g. an empty plan). `write_report(state, run_dir)` writes `report.md` and
+`report.json` under `reports/<run_id>/`, alongside any screenshots the Executor saved under
 `reports/<run_id>/screenshots/`.
+
+## Independent verification (`verifier/`)
+
+Everything above -- the Analyzer's verdict, the Executor's step status -- is the LLM's own
+self-report; nothing previously cross-checked it against anything else. The `verifier` node closes
+that gap by calling an independent service, written in Rust (`verifier/`), after every test case is
+analyzed (router rule 5 above).
+
+The service models each pipeline-stage snapshot (a `TestPlan`, a test case's execution evidence, a
+verdict) as a typed **object**, and each stage's transformation (Planner→Executor, Executor→
+Analyzer) as a **morphism** with an explicit contract (`verifier/src/category.rs`):
+
+- **Structural/composition check** (`verifier/src/laws.rs`) -- the composite Planner→Analyzer
+  contract must hold directly: every analyzed test case must trace back to a planned one and carry
+  real step evidence. A violation here is scoped `"pipeline"` and always forces `overall_status`
+  to `"fail"` (see Reporting above) -- there's no single test case to retry against.
+- **Independent oracle** (`verifier/src/oracle.rs`) -- a functor `F` maps raw `StepResult` evidence
+  to an expected verdict (any failing step ⇒ `fail`, else ⇒ `pass`). A mismatch between that and
+  the Analyzer's actual verdict is flagged with the correct verdict attached
+  (`corrected_verdict`), scoped to that test case's id.
+
+`agents/verifier.py::make_verifier_node` POSTs the current `test_plan`/`test_results` to
+`Settings.verifier_service_url` (`/verify`) and applies the response directly rather than asking
+the Analyzer LLM to retry: a `functor_consistency` violation overwrites that result's `verdict`
+with `corrected_verdict`, appends a note to `reasoning`, and sets `suspected_bug = True` so Bug
+Triage picks it up. Every violation (corrected or structural) is appended to
+`verification_violations` for the final report. If the service is unreachable or returns a
+malformed response, the node fails **open** by default (`Settings.verifier_fail_closed = False`
+-- logs and proceeds as if nothing was found) so a down or not-yet-started service never bricks an
+existing run; set `verifier_fail_closed = True` to re-raise instead once the service is trusted to
+be reliably up. `verifier_enabled = False` makes the node a no-op pass-through with no HTTP call
+at all. See [verifier/README.md](../verifier/README.md) for the Rust-side implementation (including
+the `Morphism`/`compose` algebra and its property-based law tests) and the full `/verify` API
+contract.
 
 ## Full architecture diagram
 
@@ -250,6 +298,9 @@ flowchart TD
     Coordinator -->|"unjudged result"| Analyzer["Analyzer"]
     Analyzer -->|"flaky, retries left"| Coordinator
     Analyzer --> Coordinator
+
+    Coordinator -->|"analyzed, unverified"| Verifier["Verifier\n(calls Rust qa-verifier service)"]
+    Verifier --> Coordinator
 
     Coordinator -->|"flagged bug, untriaged"| Triage["Bug Triage\n(+ repro script)"]
     Triage --> Coordinator
@@ -306,6 +357,10 @@ flowchart TD
 - `tests/llm_router/test_provider_errors.py`, `tests/llm_router/test_model_router.py` -- per-SDK
   rate-limit classification, and `ModelRouter`'s failover/candidate-exhaustion logic via a fake
   `build_call` and a monkeypatched `get_llm`.
+- `tests/test_verifier_agent.py` -- the `verifier` node's three outcomes (no violations,
+  functor-consistency correction, fail-open/fail-closed on a transport error) plus the
+  disabled-passthrough case, via a stub verifier client (no HTTP, no network). The Rust service's
+  own tests live in `verifier/tests/` (`cargo test`) -- see [verifier/README.md](../verifier/README.md).
 - `tests/test_report.py`, `tests/test_llm_factory.py`, `tests/test_ids.py`.
 
 The repo has no mocking framework (no `unittest.mock`, no `pytest-mock`) -- tests use small

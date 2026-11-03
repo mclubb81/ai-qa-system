@@ -21,6 +21,11 @@ re-synthesize against a live app without any further LLM-pipeline run.
   case's steps at a time.
 - **Analyzer** -- judges each executed test case pass/fail/flaky, with a deterministic
   threshold-based retry for "flaky" verdicts.
+- **Verifier** (`agents/verifier.py`, backed by the `verifier/` Rust service) -- an independent
+  check that gates on every analyzed result: a structural check that it's traceable back to the
+  test plan and carries real step evidence, plus an oracle that cross-checks the Analyzer's
+  verdict against that evidence and corrects it if they disagree. See
+  [Verifier](#verifier-optional-rust) below.
 - **Bug Triage** -- turns suspected-bug results into structured, GitHub-issue-ready bug reports,
   and also synthesizes a standalone Playwright repro script for each one.
 - **Generator** (`agents/codegen.py`, opt-in via `--generate-regression-scripts`) -- for each
@@ -54,6 +59,9 @@ flowchart TD
     Coordinator -->|"unjudged result"| Analyzer["Analyzer"]
     Analyzer -->|"flaky, retries left"| Coordinator
     Analyzer --> Coordinator
+
+    Coordinator -->|"analyzed, unverified"| Verifier["Verifier\n(calls Rust qa-verifier service)"]
+    Verifier --> Coordinator
 
     Coordinator -->|"flagged bug, untriaged"| Triage["Bug Triage\n(+ repro script)"]
     Triage --> Coordinator
@@ -210,6 +218,27 @@ qa-agent config set max_retries 3       # overrides MAX_RETRIES from .env once t
 
 See [docs/logging-and-config.md](docs/logging-and-config.md) for the full guide (table schemas,
 the config-precedence chain, and the full `config set/get/list` reference).
+
+## Verifier (optional, Rust)
+
+An independent verification service, written in Rust, that the pipeline consults after every test
+case is analyzed. It checks two things: a structural contract (does this result trace back to a
+planned test case, with real step evidence?) and an independent oracle (does the Analyzer's
+verdict actually agree with that step evidence?). A mismatch gets corrected directly rather than
+silently passed through to the report; a structural violation forces the run's `overall_status` to
+`fail`. Enabled by default, but fails open (logs and proceeds) if the service isn't running --
+disable it with `VERIFIER_ENABLED=false` in `.env`, or make it fail closed with
+`VERIFIER_FAIL_CLOSED=true` once you trust it's reliably up.
+
+```bash
+cd verifier
+cargo run   # listens on 127.0.0.1:8787 by default; override with PORT=...
+```
+
+See [verifier/README.md](verifier/README.md) for the API contract and the category-theoretic
+framing (objects/morphisms/composition law/functor) behind the checks, and
+[docs/architecture.md](docs/architecture.md#independent-verification-verifier) for how it's wired
+into the graph.
 
 ## Web UI (optional)
 

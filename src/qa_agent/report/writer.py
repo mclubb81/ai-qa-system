@@ -16,6 +16,9 @@ class ReportPaths:
 
 
 def overall_status(state: QAState) -> str:
+    violations = state.get("verification_violations", [])
+    if any(v.severity == "error" for v in violations):
+        return "fail"
     verdicts = {r.verdict for r in state["test_results"]}
     if "fail" in verdicts:
         return "fail"
@@ -36,6 +39,7 @@ def write_report(state: QAState, run_dir: Path) -> ReportPaths:
         test_results=state["test_results"],
         bugs=state["bugs"],
         generated_scripts=state["generated_scripts"],
+        verification_violations=state.get("verification_violations", []),
     )
 
     markdown_path = run_dir / "report.md"

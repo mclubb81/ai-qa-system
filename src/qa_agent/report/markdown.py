@@ -60,6 +60,15 @@ No bugs were flagged during this run.
 {% endfor %}
 {% endfor %}
 
+## Verification
+
+{% if not report.verification_violations %}
+No violations found by the independent verifier.
+{% endif %}
+{% for violation in report.verification_violations %}
+- **[{{ violation.severity | upper }}] {{ violation.law }}** ({{ violation.scope }}): {{ violation.message }}{% if violation.corrected_verdict %} -- verdict corrected to **{{ violation.corrected_verdict }}**{% endif %}
+{% endfor %}
+
 ## Generated Scripts
 
 {% if not report.generated_scripts %}

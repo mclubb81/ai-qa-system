@@ -1,6 +1,11 @@
 from pydantic import BaseModel, Field
 
-from qa_agent.graph.state import Bug, GeneratedScript, TestCaseResult
+from qa_agent.graph.state import (
+    Bug,
+    GeneratedScript,
+    TestCaseResult,
+    VerificationViolation,
+)
 
 
 class QAReport(BaseModel):
@@ -15,3 +20,4 @@ class QAReport(BaseModel):
     test_results: list[TestCaseResult] = Field(default_factory=list)
     bugs: list[Bug] = Field(default_factory=list)
     generated_scripts: list[GeneratedScript] = Field(default_factory=list)
+    verification_violations: list[VerificationViolation] = Field(default_factory=list)

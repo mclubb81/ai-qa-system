@@ -46,6 +46,19 @@ class Bug(BaseModel):
     repro_script_path: str | None = None
 
 
+class VerificationViolation(BaseModel):
+    """One finding from the Rust verifier service -- either a structural
+    pipeline-contract break (`scope="pipeline"`) or an independent-oracle
+    mismatch between a test case's verdict and its step evidence
+    (`scope=<test_case_id>`, with `corrected_verdict` set)."""
+
+    law: Literal["functor_consistency", "composition_contract"]
+    scope: str
+    severity: Literal["error", "warning"]
+    message: str
+    corrected_verdict: Literal["pass", "fail"] | None = None
+
+
 class GeneratedScript(BaseModel):
     """A standalone Playwright regression script for a passing test case,
     written by the codegen node (and later re-validated/re-synthesized by
@@ -78,11 +91,15 @@ class QAState(TypedDict):
     generated_scripts: list[GeneratedScript]
     generate_regression_scripts: bool
 
+    verified_test_case_ids: list[str]
+    pipeline_verified: bool
+    verification_violations: list[VerificationViolation]
+
     started_at: str
     report_markdown_path: str | None
     report_json_path: str | None
 
 
 NodeName = Literal[
-    "retriever", "planner", "executor", "analyzer", "triage", "codegen", "report"
+    "retriever", "planner", "executor", "analyzer", "verifier", "triage", "codegen", "report"
 ]

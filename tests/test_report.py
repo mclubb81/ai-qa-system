@@ -6,6 +6,7 @@ from qa_agent.graph.state import (
     QAState,
     StepResult,
     TestCaseResult,
+    VerificationViolation,
 )
 from qa_agent.report.json_writer import write_json
 from qa_agent.report.markdown import render_markdown
@@ -115,3 +116,44 @@ def test_overall_status_pass_when_all_pass():
         ]
     }  # type: ignore[typeddict-item]
     assert overall_status(state) == "pass"
+
+
+def test_overall_status_fails_on_error_severity_violation_even_if_all_pass():
+    state: QAState = {
+        "test_results": [
+            TestCaseResult(
+                test_case_id="TC-01",
+                title="x",
+                priority="high",
+                steps=[],
+                started_at="2026-01-01T00:00:00Z",
+                verdict="pass",
+            )
+        ],
+        "verification_violations": [
+            VerificationViolation(
+                law="composition_contract",
+                scope="pipeline",
+                severity="error",
+                message="structural break",
+            )
+        ],
+    }  # type: ignore[typeddict-item]
+    assert overall_status(state) == "fail"
+
+
+def test_render_markdown_contains_verification_section():
+    report = _sample_report()
+    report.verification_violations = [
+        VerificationViolation(
+            law="functor_consistency",
+            scope="TC-01",
+            severity="error",
+            message="verdict mismatch",
+            corrected_verdict="fail",
+        )
+    ]
+    md = render_markdown(report)
+    assert "functor_consistency" in md
+    assert "verdict mismatch" in md
+    assert "corrected to **fail**" in md

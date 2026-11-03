@@ -1,0 +1,49 @@
+{
+  "run_id": "sample-run-001",
+  "test_plan": [
+    {
+      "id": "tc-1",
+      "title": "Login succeeds with valid credentials",
+      "priority": "high",
+      "steps": ["Navigate to login page", "Enter valid credentials", "Submit form"]
+    },
+    {
+      "id": "tc-2",
+      "title": "Login fails with invalid password",
+      "priority": "medium",
+      "steps": ["Navigate to login page", "Enter invalid credentials", "Submit form"]
+    }
+  ],
+  "test_results": [
+    {
+      "test_case_id": "tc-1",
+      "title": "Login succeeds with valid credentials",
+      "priority": "high",
+      "steps": [
+        {"description": "Navigate to login page", "status": "pass", "tool_calls": [], "error": null, "screenshot_path": null},
+        {"description": "Enter valid credentials", "status": "pass", "tool_calls": [], "error": null, "screenshot_path": null},
+        {"description": "Submit form", "status": "pass", "tool_calls": [], "error": null, "screenshot_path": null}
+      ],
+      "verdict": "pass",
+      "reasoning": "All steps passed.",
+      "suspected_bug": false,
+      "started_at": "2026-11-03T10:00:00Z",
+      "finished_at": "2026-11-03T10:00:05Z"
+    },
+    {
+      "test_case_id": "tc-2",
+      "title": "Login fails with invalid password",
+      "priority": "medium",
+      "steps": [
+        {"description": "Navigate to login page", "status": "pass", "tool_calls": [], "error": null, "screenshot_path": null},
+        {"description": "Enter invalid credentials", "status": "pass", "tool_calls": [], "error": null, "screenshot_path": null},
+        {"description": "Submit form", "status": "fail", "tool_calls": [], "error": "Expected error message not shown", "screenshot_path": null}
+      ],
+      "verdict": "pass",
+      "reasoning": "Looked fine to me.",
+      "suspected_bug": false,
+      "started_at": "2026-11-03T10:01:00Z",
+      "finished_at": "2026-11-03T10:01:05Z"
+    }
+  ]
+}
