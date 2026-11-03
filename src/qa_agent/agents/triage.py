@@ -31,7 +31,12 @@ class TriageResponse(BaseModel):
 
 
 def make_triage_node(
-    router: ModelRouter, rag_service: RagService, log_service: LogService, settings: Settings
+    router: ModelRouter,
+    rag_service: RagService,
+    log_service: LogService,
+    settings: Settings,
+    system_prompt: str = TRIAGE_SYSTEM_PROMPT,
+    prompt_version: int | None = None,
 ) -> Callable[[QAState], Awaitable[dict]]:
     async def triage_node(state: QAState) -> dict:
         triaged_ids = {b.related_test_case_id for b in state["bugs"]}
@@ -74,7 +79,7 @@ def make_triage_node(
         def build_call(llm: BaseChatModel) -> Callable[[], Awaitable[Any]]:
             structured_llm = llm.with_structured_output(TriageResponse)
             return lambda: structured_llm.ainvoke(
-                [SystemMessage(content=TRIAGE_SYSTEM_PROMPT), HumanMessage(content=user_message)]
+                [SystemMessage(content=system_prompt), HumanMessage(content=user_message)]
             )
 
         triage: TriageResponse = await router.call_with_selection(
@@ -84,6 +89,8 @@ def make_triage_node(
             log_service=log_service,
             settings=settings,
             prompt_chars=len(user_message),
+            prompt_version=prompt_version,
+            prompt_source_node="triage",
         )
 
         screenshot_refs = [step.screenshot_path for step in result.steps if step.screenshot_path]

@@ -88,7 +88,11 @@ def write_generated_script(
 
 
 def make_codegen_node(
-    router: ModelRouter, log_service: LogService, settings: Settings
+    router: ModelRouter,
+    log_service: LogService,
+    settings: Settings,
+    system_prompt: str = CODEGEN_SYSTEM_PROMPT,
+    prompt_version: int | None = None,
 ) -> Callable[[QAState], Awaitable[dict]]:
     async def codegen_node(state: QAState) -> dict:
         codegen_ids = {g.test_case_id for g in state["generated_scripts"]}
@@ -107,7 +111,7 @@ def make_codegen_node(
         def build_call(llm: BaseChatModel) -> Callable[[], Awaitable[Any]]:
             structured_llm = llm.with_structured_output(CodegenResponse)
             return lambda: structured_llm.ainvoke(
-                [SystemMessage(content=CODEGEN_SYSTEM_PROMPT), HumanMessage(content=user_message)]
+                [SystemMessage(content=system_prompt), HumanMessage(content=user_message)]
             )
 
         response: CodegenResponse = await router.call_with_selection(
@@ -117,6 +121,8 @@ def make_codegen_node(
             log_service=log_service,
             settings=settings,
             prompt_chars=len(user_message),
+            prompt_version=prompt_version,
+            prompt_source_node="codegen",
         )
 
         run_dir = Path(state["screenshot_dir"]).parent

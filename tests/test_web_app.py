@@ -294,7 +294,7 @@ def test_healer_post_heals_selected_script(client, monkeypatch, tmp_path):
     _patch_settings(monkeypatch, tmp_path)
     script_path = _write_script(tmp_path, "run-a", "TC-01")
 
-    async def fake_heal_many(targets, router, log_service, settings):
+    async def fake_heal_many(targets, router, log_service, settings, **kwargs):
         return [HealResult(targets[0], "healed", "locators updated")]
 
     monkeypatch.setattr(routes_module, "heal_many", fake_heal_many)

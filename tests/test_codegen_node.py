@@ -112,3 +112,25 @@ async def test_codegen_node_skips_test_case_already_generated(tmp_path):
     assert len(update["generated_scripts"]) == 2
     new_ids = {g.test_case_id for g in update["generated_scripts"]}
     assert new_ids == {"TC-01", "TC-02"}
+
+
+async def test_codegen_node_uses_custom_system_prompt(tmp_path):
+    stub_llm = _StubLLM(_canned_codegen())
+    node = make_codegen_node(
+        _StubModelRouter(stub_llm),
+        _DISABLED_LOG_SERVICE,
+        _SETTINGS,
+        system_prompt="CUSTOM CODEGEN PROMPT",
+        prompt_version=2,
+    )
+
+    state = {
+        "run_id": "test-run",
+        "target_url": "https://example.com",
+        "screenshot_dir": str(tmp_path / "screenshots"),
+        "test_results": [_passed_result()],
+        "generated_scripts": [],
+    }
+    await node(state)
+
+    assert stub_llm.structured_llm.last_messages[0].content == "CUSTOM CODEGEN PROMPT"

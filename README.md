@@ -219,6 +219,13 @@ qa-agent config set max_retries 3       # overrides MAX_RETRIES from .env once t
 See [docs/logging-and-config.md](docs/logging-and-config.md) for the full guide (table schemas,
 the config-precedence chain, and the full `config set/get/list` reference).
 
+## Dynamic prompts (optional, Postgres)
+
+Each agent's system prompt (hardcoded in `src/qa_agent/prompts/`) can optionally be overridden
+with a versioned, Postgres-backed prompt via `qa-agent prompts set/activate/revert` or the web
+UI's **Prompts** page -- including by an external program, such as a remote reinforcement-learning
+loop with no code changes or deploy to this repo. See [docs/prompts.md](docs/prompts.md).
+
 ## Verifier (optional, Rust)
 
 An independent verification service, written in Rust, that the pipeline consults after every test

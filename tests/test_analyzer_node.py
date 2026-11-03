@@ -10,17 +10,21 @@ _DISABLED_LOG_SERVICE = LogService(None, _SETTINGS)
 class _StubStructuredLLM:
     def __init__(self, response):
         self._response = response
+        self.last_messages = None
 
     async def ainvoke(self, messages):
+        self.last_messages = messages
         return self._response
 
 
 class _StubLLM:
     def __init__(self, response):
         self._response = response
+        self.structured_llm = None
 
     def with_structured_output(self, schema):
-        return _StubStructuredLLM(self._response)
+        self.structured_llm = _StubStructuredLLM(self._response)
+        return self.structured_llm
 
 
 class _StubModelRouter:
@@ -100,3 +104,27 @@ async def test_analyzer_keeps_flaky_verdict_once_retry_budget_exhausted():
 
     result = update["test_results"][0]
     assert result.verdict == "flaky"
+
+
+async def test_analyzer_node_uses_custom_system_prompt():
+    canned = AnalysisResponse(verdict="pass", reasoning="Looks fine", suspected_bug=False)
+    stub_llm = _StubLLM(canned)
+    node = make_analyzer_node(
+        _StubModelRouter(stub_llm),
+        _DISABLED_LOG_SERVICE,
+        _SETTINGS,
+        system_prompt="CUSTOM ANALYZER PROMPT",
+        prompt_version=3,
+    )
+
+    state = {
+        "run_id": "test-run",
+        "llm_provider": "groq",
+        "llm_model": "",
+        "test_results": [_pending_result()],
+        "retry_counts": {},
+        "max_retries": 1,
+    }
+    await node(state)
+
+    assert stub_llm.structured_llm.last_messages[0].content == "CUSTOM ANALYZER PROMPT"

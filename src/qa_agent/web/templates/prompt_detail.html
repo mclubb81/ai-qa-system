@@ -1,0 +1,76 @@
+{% extends "base.html" %}
+{% block title %}Prompt: {{ node }}{% endblock %}
+{% block content %}
+  <h1>{{ node }}</h1>
+  <p class="field-hint"><a href="{{ url_for('main.prompts_list') }}">&larr; All prompts</a></p>
+
+  {% if not service_enabled %}
+    <div class="banner banner-warning">
+      Prompts DB not configured -- set <code>QA_CONFIG_DATABASE_URL</code> in <code>.env</code> to enable
+      editing. Showing the hardcoded default below.
+    </div>
+  {% endif %}
+
+  <div class="card">
+    <h2>
+      Currently active
+      {% if active_version is not none %}
+        (version {{ active_version }})
+      {% else %}
+        (hardcoded default)
+      {% endif %}
+    </h2>
+    <pre class="field-hint" style="white-space: pre-wrap;">{{ active_content }}</pre>
+  </div>
+
+  <form class="card form" method="post" action="{{ url_for('main.prompt_create', node=node) }}">
+    <fieldset {% if not service_enabled %}disabled{% endif %}>
+      <legend>Create a new version</legend>
+      <label for="content">Prompt content</label>
+      <textarea id="content" name="content" rows="20">{{ active_content }}</textarea>
+      <label class="checkbox-row">
+        <input type="checkbox" name="activate" checked> activate immediately
+      </label>
+    </fieldset>
+    {% if service_enabled %}
+      <button type="submit" class="btn-primary">Save new version</button>
+    {% endif %}
+  </form>
+
+  <div class="card">
+    <h2>Version history</h2>
+    {% if not versions %}
+      <p class="field-hint">No stored versions yet -- this node is using its hardcoded default.</p>
+    {% else %}
+      <table class="table">
+        <thead>
+          <tr><th>Version</th><th>Source</th><th>Created by</th><th>Created at</th><th>Active</th><th></th></tr>
+        </thead>
+        <tbody>
+          {% for v in versions %}
+            <tr>
+              <td>{{ v.version }}</td>
+              <td>{{ v.source }}</td>
+              <td>{{ v.created_by or "" }}</td>
+              <td>{{ v.created_at }}</td>
+              <td>{% if v.is_active %}<span class="badge badge-pass">active</span>{% endif %}</td>
+              <td>
+                {% if not v.is_active and service_enabled %}
+                  <form method="post" action="{{ url_for('main.prompt_activate', node=node, version=v.version) }}">
+                    <button type="submit" class="btn-primary">Activate</button>
+                  </form>
+                {% endif %}
+              </td>
+            </tr>
+          {% endfor %}
+        </tbody>
+      </table>
+    {% endif %}
+  </div>
+
+  {% if service_enabled %}
+    <form method="post" action="{{ url_for('main.prompt_revert', node=node) }}">
+      <button type="submit" class="btn-primary">Revert to hardcoded default</button>
+    </form>
+  {% endif %}
+{% endblock %}

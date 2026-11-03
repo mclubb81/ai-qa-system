@@ -18,7 +18,13 @@ from qa_agent.config import Settings, get_effective_settings, get_settings
 from qa_agent.core.session import run_qa_session
 from qa_agent.db.config_service import ConfigService
 from qa_agent.db.log_service import LogService
+from qa_agent.db.prompt_service import PromptService
 from qa_agent.llm_router.model_router import ModelRouter
+from qa_agent.prompts.analyzer import ANALYZER_SYSTEM_PROMPT
+from qa_agent.prompts.codegen import CODEGEN_SYSTEM_PROMPT
+from qa_agent.prompts.executor import EXECUTOR_SYSTEM_PROMPT
+from qa_agent.prompts.planner import PLANNER_SYSTEM_PROMPT
+from qa_agent.prompts.triage import TRIAGE_SYSTEM_PROMPT
 from qa_agent.utils.coerce import coerce_value
 from qa_agent.web.jobs import JOBS, run_async_job
 from qa_agent.web.scanning import load_report, scan_generated_scripts, scan_reports
@@ -35,6 +41,14 @@ JSON_FIELDS = {
     "provider_cost_weights",
     "loop_a_pid_gains",
     "loop_b_pid_gains",
+}
+
+PROMPTED_NODE_DEFAULTS = {
+    "planner": PLANNER_SYSTEM_PROMPT,
+    "executor": EXECUTOR_SYSTEM_PROMPT,
+    "analyzer": ANALYZER_SYSTEM_PROMPT,
+    "triage": TRIAGE_SYSTEM_PROMPT,
+    "codegen": CODEGEN_SYSTEM_PROMPT,
 }
 
 
@@ -191,10 +205,103 @@ def healer_view():
         model = request.form.get("model") or None
         router = ModelRouter.from_settings(settings, provider=provider, model=model)
         log_service = LogService.from_settings(settings)
+        prompt_service = PromptService.from_settings(settings)
+        executor_prompt, executor_version = prompt_service.get_active_version(
+            "executor", EXECUTOR_SYSTEM_PROMPT
+        )
+        codegen_prompt, codegen_version = prompt_service.get_active_version(
+            "codegen", CODEGEN_SYSTEM_PROMPT
+        )
 
         job = JOBS.create("heal", params={"scripts": [str(p) for p in targets]})
-        run_async_job(JOBS, job, lambda: heal_many(targets, router, log_service, settings))
+        run_async_job(
+            JOBS,
+            job,
+            lambda: heal_many(
+                targets,
+                router,
+                log_service,
+                settings,
+                executor_prompt=executor_prompt,
+                executor_prompt_version=executor_version,
+                codegen_prompt=codegen_prompt,
+                codegen_prompt_version=codegen_version,
+            ),
+        )
         return redirect(url_for("main.job_status", job_id=job.job_id))
 
     scripts = scan_generated_scripts(reports_root, settings.generated_tests_dirname)
     return render_template("healer.html", scripts=scripts, providers=PROVIDERS)
+
+
+@bp.route("/prompts")
+def prompts_list():
+    service = PromptService.from_settings(get_settings())
+    nodes = []
+    for name, default in PROMPTED_NODE_DEFAULTS.items():
+        content, version = service.get_active_version(name, default)
+        nodes.append({"name": name, "content": content, "version": version})
+    return render_template("prompts.html", nodes=nodes, service_enabled=service.enabled)
+
+
+@bp.route("/prompts/<node>")
+def prompt_detail(node):
+    if node not in PROMPTED_NODE_DEFAULTS:
+        abort(404)
+    service = PromptService.from_settings(get_settings())
+    default = PROMPTED_NODE_DEFAULTS[node]
+    active_content, active_version = service.get_active_version(node, default)
+    versions = service.list_versions(node)
+    return render_template(
+        "prompt_detail.html",
+        node=node,
+        versions=versions,
+        active_content=active_content,
+        active_version=active_version,
+        default_prompt=default,
+        service_enabled=service.enabled,
+    )
+
+
+@bp.route("/prompts/<node>/new", methods=["POST"])
+def prompt_create(node):
+    if node not in PROMPTED_NODE_DEFAULTS:
+        abort(404)
+    service = PromptService.from_settings(get_settings())
+    if not service.enabled:
+        abort(400)
+    content = request.form.get("content", "")
+    if not content.strip():
+        flash("Prompt content cannot be empty.")
+        return redirect(url_for("main.prompt_detail", node=node))
+    activate = bool(request.form.get("activate"))
+    service.create_version(node, content, source="manual", activate=activate)
+    flash(f"New prompt version created for {node}.")
+    return redirect(url_for("main.prompt_detail", node=node))
+
+
+@bp.route("/prompts/<node>/activate/<int:version>", methods=["POST"])
+def prompt_activate(node, version):
+    if node not in PROMPTED_NODE_DEFAULTS:
+        abort(404)
+    service = PromptService.from_settings(get_settings())
+    if not service.enabled:
+        abort(400)
+    try:
+        service.activate(node, version)
+        flash(f"Activated {node} version {version}.")
+    except ValueError:
+        flash(f"Version {version} not found for {node}.")
+    return redirect(url_for("main.prompt_detail", node=node))
+
+
+@bp.route("/prompts/<node>/revert", methods=["POST"])
+def prompt_revert(node):
+    if node not in PROMPTED_NODE_DEFAULTS:
+        abort(404)
+    service = PromptService.from_settings(get_settings())
+    if not service.enabled:
+        abort(400)
+    service.revert_to_default(node)
+    flash(f"{node} reverted to its hardcoded default prompt.")
+    return redirect(url_for("main.prompt_detail", node=node))

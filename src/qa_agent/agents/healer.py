@@ -16,6 +16,7 @@ from qa_agent.db.log_service import LogService
 from qa_agent.llm_router.model_router import ModelRouter
 from qa_agent.mcp.playwright_client import PlaywrightMCPSession
 from qa_agent.prompts.codegen import CODEGEN_SYSTEM_PROMPT
+from qa_agent.prompts.executor import EXECUTOR_SYSTEM_PROMPT
 
 
 @dataclass
@@ -32,6 +33,10 @@ async def heal_script(
     settings: Settings,
     *,
     session_factory: Callable[[], AbstractAsyncContextManager[Any]] | None = None,
+    executor_prompt: str = EXECUTOR_SYSTEM_PROMPT,
+    executor_prompt_version: int | None = None,
+    codegen_prompt: str = CODEGEN_SYSTEM_PROMPT,
+    codegen_prompt_version: int | None = None,
 ) -> HealResult:
     """Re-execute a generated regression script's ORIGINAL steps against the
     live app (re-resolving locators from a fresh accessibility-tree
@@ -71,7 +76,7 @@ async def heal_script(
 
         def build_executor_call(llm: BaseChatModel):
             if id(llm) not in agent_cache:
-                agent_cache[id(llm)] = build_executor_agent(llm, session.tools)
+                agent_cache[id(llm)] = build_executor_agent(llm, session.tools, executor_prompt)
             agent = agent_cache[id(llm)]
             return lambda: agent.ainvoke(
                 {"messages": [HumanMessage(content=user_message)]},
@@ -85,6 +90,8 @@ async def heal_script(
             log_service=log_service,
             settings=settings,
             prompt_chars=len(user_message),
+            prompt_version=executor_prompt_version,
+            prompt_source_node="executor",
         )
         messages = result["messages"]
         structured = result["structured_response"]
@@ -109,7 +116,7 @@ async def heal_script(
             structured_llm = llm.with_structured_output(CodegenResponse)
             return lambda: structured_llm.ainvoke(
                 [
-                    SystemMessage(content=CODEGEN_SYSTEM_PROMPT),
+                    SystemMessage(content=codegen_prompt),
                     HumanMessage(content=codegen_user_message),
                 ]
             )
@@ -121,6 +128,8 @@ async def heal_script(
             log_service=log_service,
             settings=settings,
             prompt_chars=len(codegen_user_message),
+            prompt_version=codegen_prompt_version,
+            prompt_source_node="codegen",
         )
 
     old_script = script_path.read_text()
@@ -136,9 +145,29 @@ async def heal_script(
 
 
 async def heal_many(
-    targets: list[Path], router: ModelRouter, log_service: LogService, settings: Settings
+    targets: list[Path],
+    router: ModelRouter,
+    log_service: LogService,
+    settings: Settings,
+    *,
+    executor_prompt: str = EXECUTOR_SYSTEM_PROMPT,
+    executor_prompt_version: int | None = None,
+    codegen_prompt: str = CODEGEN_SYSTEM_PROMPT,
+    codegen_prompt_version: int | None = None,
 ) -> list[HealResult]:
     """Heal several scripts in sequence (one live browser session each, so
     running them concurrently wouldn't actually be faster). Shared by the
     CLI's `heal --all` and the web UI's healer page."""
-    return [await heal_script(target, router, log_service, settings) for target in targets]
+    return [
+        await heal_script(
+            target,
+            router,
+            log_service,
+            settings,
+            executor_prompt=executor_prompt,
+            executor_prompt_version=executor_prompt_version,
+            codegen_prompt=codegen_prompt,
+            codegen_prompt_version=codegen_prompt_version,
+        )
+        for target in targets
+    ]

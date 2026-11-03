@@ -94,6 +94,8 @@ class ModelRouter:
         log_service: LogService,
         settings: Settings,
         prompt_chars: int = 0,
+        prompt_version: int | None = None,
+        prompt_source_node: str | None = None,
     ) -> Any:
         candidates = self._candidates(node_name)
         available = [p for p in candidates if p not in self._unavailable]
@@ -120,6 +122,8 @@ class ModelRouter:
                     log_service=log_service,
                     settings=settings,
                     prompt_chars=prompt_chars,
+                    prompt_version=prompt_version,
+                    prompt_source_node=prompt_source_node,
                 )
             except DailyQuotaExceededError as exc:
                 self._unavailable.add(provider)

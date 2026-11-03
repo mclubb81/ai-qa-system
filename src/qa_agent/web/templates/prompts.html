@@ -1,0 +1,28 @@
+{% extends "base.html" %}
+{% block title %}Prompts{% endblock %}
+{% block content %}
+  <h1>Prompts</h1>
+
+  {% if not service_enabled %}
+    <div class="banner banner-warning">
+      Prompts DB not configured -- set <code>QA_CONFIG_DATABASE_URL</code> in <code>.env</code> to enable
+      versioning. Showing each node's hardcoded default.
+    </div>
+  {% endif %}
+
+  <div class="card-grid">
+    {% for node in nodes %}
+      <a class="card" href="{{ url_for('main.prompt_detail', node=node.name) }}">
+        <h2>{{ node.name }}</h2>
+        <p>
+          {% if node.version is not none %}
+            Active: version {{ node.version }}
+          {% else %}
+            Using hardcoded default
+          {% endif %}
+        </p>
+        <p class="field-hint">{{ node.content[:160] }}{% if node.content|length > 160 %}…{% endif %}</p>
+      </a>
+    {% endfor %}
+  </div>
+{% endblock %}

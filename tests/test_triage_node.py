@@ -152,3 +152,28 @@ async def test_triage_node_writes_repro_script_and_sets_path(tmp_path):
     user_message = stub_llm.structured_llm.last_messages[1].content
     assert "browser_click" in user_message
     assert "ephemeral accessibility-tree ids" in user_message
+
+
+async def test_triage_node_uses_custom_system_prompt(tmp_path):
+    stub_llm = _StubLLM(_canned_triage())
+    node = make_triage_node(
+        _StubModelRouter(stub_llm),
+        _StubRagService([]),
+        _DISABLED_LOG_SERVICE,
+        _SETTINGS,
+        system_prompt="CUSTOM TRIAGE PROMPT",
+        prompt_version=4,
+    )
+
+    state = {
+        "run_id": "test-run",
+        "target_url": "https://example.com",
+        "llm_provider": "groq",
+        "llm_model": "",
+        "screenshot_dir": str(tmp_path / "screenshots"),
+        "bugs": [],
+        "test_results": [_flagged_result()],
+    }
+    await node(state)
+
+    assert stub_llm.structured_llm.last_messages[0].content == "CUSTOM TRIAGE PROMPT"

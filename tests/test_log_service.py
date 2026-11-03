@@ -68,3 +68,33 @@ async def test_ensure_ready_disables_permanently_after_open_failure():
     # A second call must not retry opening the (now-abandoned) pool.
     await service.log_error("run-1", None, "boom")
     assert pool.open_calls == 1
+
+
+async def test_log_llm_call_round_trips_prompt_version_and_source_node():
+    pool = _StubAsyncPool()
+    service = LogService(pool, _settings())
+
+    await service.log_llm_call(
+        "run-1", "healer", "groq", "model", "t0", "t1", 10.0, 100, 50,
+        prompt_version=3, prompt_source_node="executor",
+    )
+
+    sql, params = pool.executed[-1]
+    assert "prompt_version" in sql
+    assert "prompt_source_node" in sql
+    assert params[-2:] == (3, "executor")
+
+
+async def test_log_run_start_round_trips_prompt_versions_snapshot():
+    pool = _StubAsyncPool()
+    service = LogService(pool, _settings())
+
+    await service.log_run_start(
+        "run-1", "https://example.com", "reqs", "groq", "model", "t0",
+        prompt_versions={"planner": 2, "analyzer": None},
+    )
+
+    sql, params = pool.executed[-1]
+    assert "prompt_versions" in sql
+    snapshot = params[-1]
+    assert snapshot.obj == {"planner": 2, "analyzer": None}

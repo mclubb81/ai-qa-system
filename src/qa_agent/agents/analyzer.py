@@ -26,7 +26,11 @@ def _should_retry(state: QAState, test_case_id: str) -> bool:
 
 
 def make_analyzer_node(
-    router: ModelRouter, log_service: LogService, settings: Settings
+    router: ModelRouter,
+    log_service: LogService,
+    settings: Settings,
+    system_prompt: str = ANALYZER_SYSTEM_PROMPT,
+    prompt_version: int | None = None,
 ) -> Callable[[QAState], Awaitable[dict]]:
     async def analyzer_node(state: QAState) -> dict:
         result = next(r for r in state["test_results"] if r.verdict is None)
@@ -43,7 +47,7 @@ def make_analyzer_node(
         def build_call(llm: BaseChatModel) -> Callable[[], Awaitable[Any]]:
             structured_llm = llm.with_structured_output(AnalysisResponse)
             return lambda: structured_llm.ainvoke(
-                [SystemMessage(content=ANALYZER_SYSTEM_PROMPT), HumanMessage(content=user_message)]
+                [SystemMessage(content=system_prompt), HumanMessage(content=user_message)]
             )
 
         analysis: AnalysisResponse = await router.call_with_selection(
@@ -53,6 +57,8 @@ def make_analyzer_node(
             log_service=log_service,
             settings=settings,
             prompt_chars=len(user_message),
+            prompt_version=prompt_version,
+            prompt_source_node="analyzer",
         )
 
         other_results = [r for r in state["test_results"] if r.test_case_id != result.test_case_id]

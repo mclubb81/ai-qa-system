@@ -1,4 +1,5 @@
 import asyncio
+import os
 from pathlib import Path
 
 import typer
@@ -11,8 +12,14 @@ from qa_agent.core.session import RunResult, run_qa_session
 from qa_agent.db.client import get_config_dsn, get_logs_pool, get_sync_connection
 from qa_agent.db.config_service import ConfigService
 from qa_agent.db.log_service import LogService
-from qa_agent.db.schema import ensure_config_schema, ensure_logs_schema
+from qa_agent.db.prompt_service import PromptService
+from qa_agent.db.schema import ensure_config_schema, ensure_logs_schema, ensure_prompts_schema
 from qa_agent.llm_router.model_router import ModelRouter
+from qa_agent.prompts.analyzer import ANALYZER_SYSTEM_PROMPT
+from qa_agent.prompts.codegen import CODEGEN_SYSTEM_PROMPT
+from qa_agent.prompts.executor import EXECUTOR_SYSTEM_PROMPT
+from qa_agent.prompts.planner import PLANNER_SYSTEM_PROMPT
+from qa_agent.prompts.triage import TRIAGE_SYSTEM_PROMPT
 from qa_agent.rag.client import get_qdrant_client
 from qa_agent.rag.collections import ensure_collection
 from qa_agent.rag.ingest import load_bug_records, load_doc_chunks
@@ -24,6 +31,17 @@ console = Console()
 
 config_app = typer.Typer(add_completion=False)
 app.add_typer(config_app, name="config")
+
+prompts_app = typer.Typer(add_completion=False)
+app.add_typer(prompts_app, name="prompts")
+
+_PROMPTED_NODE_DEFAULTS = {
+    "planner": PLANNER_SYSTEM_PROMPT,
+    "executor": EXECUTOR_SYSTEM_PROMPT,
+    "analyzer": ANALYZER_SYSTEM_PROMPT,
+    "triage": TRIAGE_SYSTEM_PROMPT,
+    "codegen": CODEGEN_SYSTEM_PROMPT,
+}
 
 
 @app.callback()
@@ -166,8 +184,26 @@ def heal(
 
     router = ModelRouter.from_settings(settings, provider=provider, model=model)
     log_service = LogService.from_settings(settings)
+    prompt_service = PromptService.from_settings(settings)
+    executor_prompt, executor_version = prompt_service.get_active_version(
+        "executor", EXECUTOR_SYSTEM_PROMPT
+    )
+    codegen_prompt, codegen_version = prompt_service.get_active_version(
+        "codegen", CODEGEN_SYSTEM_PROMPT
+    )
 
-    results = asyncio.run(heal_many(targets, router, log_service, settings))
+    results = asyncio.run(
+        heal_many(
+            targets,
+            router,
+            log_service,
+            settings,
+            executor_prompt=executor_prompt,
+            executor_prompt_version=executor_version,
+            codegen_prompt=codegen_prompt,
+            codegen_prompt_version=codegen_version,
+        )
+    )
 
     exit_code = 0
     status_colors = {"healed": "green", "still_valid": "dim", "regression_detected": "red"}
@@ -267,6 +303,127 @@ def config_list() -> None:
         console.print(f"{key} = {value}")
 
 
+@prompts_app.command("list")
+def prompts_list(
+    node: str | None = typer.Argument(
+        None, help="Node name (planner/executor/analyzer/triage/codegen). Omit to list all nodes."
+    ),
+) -> None:
+    """List prompt versions. With a node, show its full version history;
+    without one, show every node's currently active version."""
+    service = PromptService.from_settings(get_settings())
+    if node is not None:
+        if node not in _PROMPTED_NODE_DEFAULTS:
+            console.print(f"[red]Unknown node {node!r}. Choices: {', '.join(_PROMPTED_NODE_DEFAULTS)}[/red]")
+            raise typer.Exit(1)
+        versions = service.list_versions(node)
+        if not versions:
+            console.print(f"[dim]{node}: no stored versions -- using the hardcoded default.[/dim]")
+            return
+        table = Table(title=f"Prompt versions: {node}")
+        table.add_column("Version")
+        table.add_column("Source")
+        table.add_column("Created by")
+        table.add_column("Created at")
+        table.add_column("Active")
+        for v in versions:
+            table.add_row(
+                str(v.version), v.source, v.created_by or "", v.created_at, "yes" if v.is_active else ""
+            )
+        console.print(table)
+        return
+
+    for name, default in _PROMPTED_NODE_DEFAULTS.items():
+        _, version = service.get_active_version(name, default)
+        label = f"version {version}" if version is not None else "(using hardcoded default)"
+        console.print(f"{name}: {label}")
+
+
+@prompts_app.command("show")
+def prompts_show(
+    node: str = typer.Argument(..., help="Node name (planner/executor/analyzer/triage/codegen)."),
+    version: int | None = typer.Option(None, "--version", help="Show a specific version instead of the active one."),
+) -> None:
+    """Print the full prompt content for a node."""
+    if node not in _PROMPTED_NODE_DEFAULTS:
+        console.print(f"[red]Unknown node {node!r}. Choices: {', '.join(_PROMPTED_NODE_DEFAULTS)}[/red]")
+        raise typer.Exit(1)
+    service = PromptService.from_settings(get_settings())
+    default = _PROMPTED_NODE_DEFAULTS[node]
+    if version is None:
+        content, resolved_version = service.get_active_version(node, default)
+        label = f"version {resolved_version}" if resolved_version is not None else "hardcoded default"
+        console.print(f"[dim]{node} -- {label}[/dim]\n")
+        console.print(content)
+        return
+    match = next((v for v in service.list_versions(node) if v.version == version), None)
+    if match is None:
+        console.print(f"[red]No such prompt version: node={node!r} version={version!r}[/red]")
+        raise typer.Exit(1)
+    console.print(f"[dim]{node} -- version {match.version} ({match.source})[/dim]\n")
+    console.print(match.content)
+
+
+@prompts_app.command("set")
+def prompts_set(
+    node: str = typer.Argument(..., help="Node name (planner/executor/analyzer/triage/codegen)."),
+    content: str = typer.Argument(..., help="New prompt text, or a path to a file containing it."),
+    source: str = typer.Option("manual", "--source", help="Who/what produced this version (e.g. manual, rl)."),
+    activate: bool = typer.Option(True, "--activate/--no-activate", help="Activate this version immediately."),
+) -> None:
+    """Create a new prompt version for a node (append-only history)."""
+    if node not in _PROMPTED_NODE_DEFAULTS:
+        console.print(f"[red]Unknown node {node!r}. Choices: {', '.join(_PROMPTED_NODE_DEFAULTS)}[/red]")
+        raise typer.Exit(1)
+    service = PromptService.from_settings(get_settings())
+    if not service.enabled:
+        console.print("[red]Prompts DB is not configured -- set QA_CONFIG_DATABASE_URL in .env.[/red]")
+        raise typer.Exit(1)
+    text = _load_requirements(content)
+    new_version = service.create_version(
+        node, text, source=source, created_by=os.environ.get("USER"), activate=activate
+    )
+    status = "activated" if activate else "created (not activated)"
+    console.print(f"{node}: version {new_version} {status}.")
+
+
+@prompts_app.command("activate")
+def prompts_activate(
+    node: str = typer.Argument(..., help="Node name (planner/executor/analyzer/triage/codegen)."),
+    version: int = typer.Argument(..., help="Version number to activate."),
+) -> None:
+    """Activate a previously stored prompt version for a node."""
+    if node not in _PROMPTED_NODE_DEFAULTS:
+        console.print(f"[red]Unknown node {node!r}. Choices: {', '.join(_PROMPTED_NODE_DEFAULTS)}[/red]")
+        raise typer.Exit(1)
+    service = PromptService.from_settings(get_settings())
+    if not service.enabled:
+        console.print("[red]Prompts DB is not configured -- set QA_CONFIG_DATABASE_URL in .env.[/red]")
+        raise typer.Exit(1)
+    try:
+        service.activate(node, version)
+    except ValueError as exc:
+        console.print(f"[red]{exc}[/red]")
+        raise typer.Exit(1) from exc
+    console.print(f"{node}: activated version {version}.")
+
+
+@prompts_app.command("revert")
+def prompts_revert(
+    node: str = typer.Argument(..., help="Node name (planner/executor/analyzer/triage/codegen)."),
+) -> None:
+    """Revert a node to its hardcoded default prompt (deactivates the stored version)."""
+    if node not in _PROMPTED_NODE_DEFAULTS:
+        console.print(f"[red]Unknown node {node!r}. Choices: {', '.join(_PROMPTED_NODE_DEFAULTS)}[/red]")
+        raise typer.Exit(1)
+    service = PromptService.from_settings(get_settings())
+    if not service.enabled:
+        console.print("[red]Prompts DB is not configured -- set QA_CONFIG_DATABASE_URL in .env.[/red]")
+        raise typer.Exit(1)
+    service.revert_to_default(node)
+    console.print(f"{node}: reverted to hardcoded default.")
+
+
 @app.command("db-init")
 def db_init() -> None:
     """Explicitly (re-)create the qa_logs/qa_config schemas.
@@ -282,12 +439,14 @@ def db_init() -> None:
         conn = get_sync_connection(config_dsn)
         if conn is not None:
             ensure_config_schema(conn)
+            ensure_prompts_schema(conn)
             conn.close()
             console.print("qa_config schema ensured.")
+            console.print("prompt_versions schema ensured.")
         else:
             console.print("[red]Could not connect to qa_config DB.[/red]")
     else:
-        console.print("[dim]QA_CONFIG_DATABASE_URL not set -- skipping qa_config.[/dim]")
+        console.print("[dim]QA_CONFIG_DATABASE_URL not set -- skipping qa_config/prompt_versions.[/dim]")
 
     logs_pool = get_logs_pool(settings)
     if logs_pool is not None:

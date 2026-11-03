@@ -29,7 +29,9 @@ class ExecutionReport(BaseModel):
     steps: list[StepOutcome] = Field(default_factory=list)
 
 
-def build_executor_agent(llm: BaseChatModel, tools: list[BaseTool]) -> CompiledStateGraph:
+def build_executor_agent(
+    llm: BaseChatModel, tools: list[BaseTool], system_prompt: str = EXECUTOR_SYSTEM_PROMPT
+) -> CompiledStateGraph:
     """Build the ReAct agent that drives Playwright MCP tools for one test case.
 
     This is the only agent with browser tools bound to it -- Planner,
@@ -39,7 +41,7 @@ def build_executor_agent(llm: BaseChatModel, tools: list[BaseTool]) -> CompiledS
     return create_agent(
         llm,
         tools,
-        system_prompt=EXECUTOR_SYSTEM_PROMPT,
+        system_prompt=system_prompt,
         response_format=ExecutionReport,
     )
 
@@ -99,6 +101,8 @@ def make_executor_node(
     tools: list[BaseTool],
     log_service: LogService,
     settings: Settings,
+    system_prompt: str = EXECUTOR_SYSTEM_PROMPT,
+    prompt_version: int | None = None,
 ) -> Callable[[QAState], Awaitable[dict]]:
     # Keyed by id(llm) -- stable within a run since the router already
     # caches BaseChatModel instances per (provider, model) -- so a
@@ -121,7 +125,7 @@ def make_executor_node(
 
         def build_call(llm: BaseChatModel) -> Callable[[], Awaitable[Any]]:
             if id(llm) not in agent_cache:
-                agent_cache[id(llm)] = build_executor_agent(llm, tools)
+                agent_cache[id(llm)] = build_executor_agent(llm, tools, system_prompt)
             executor_agent = agent_cache[id(llm)]
             return lambda: executor_agent.ainvoke(
                 {"messages": [HumanMessage(content=user_message)]},
@@ -135,6 +139,8 @@ def make_executor_node(
             log_service=log_service,
             settings=settings,
             prompt_chars=len(user_message),
+            prompt_version=prompt_version,
+            prompt_source_node="executor",
         )
         messages = result["messages"]
         structured: ExecutionReport = result["structured_response"]

@@ -15,6 +15,7 @@ flowchart LR
         ingestDocs["ingest-docs"]
         ingestBugs["ingest-bugs"]
         configCmds["config set / get / list"]
+        promptCmds["prompts list / show / set / activate / revert"]
         dbInit["db-init"]
     end
 
@@ -24,9 +25,12 @@ flowchart LR
     ingestDocs --> QdrantDocs[("Qdrant: qa_docs")]
     ingestBugs --> QdrantBugs[("Qdrant: qa_bugs")]
     configCmds --> ConfigDB[("Postgres: qa_config")]
+    promptCmds --> PromptsTable[("Postgres: qa_config.prompt_versions")]
     dbInit --> ConfigDB
+    dbInit --> PromptsTable
     dbInit --> LogsDB[("Postgres: qa_logs")]
     Graph -.-> LogsDB
+    Graph -.-> PromptsTable
     Graph -.-> QdrantDocs
     Graph -.-> QdrantBugs
 ```
@@ -166,14 +170,81 @@ qa-agent config list
 Exit code: `1` with a yellow error message if the config DB isn't configured. Prints a dim
 "no config values set" message (exit `0`) if the DB is reachable but empty.
 
+## `qa-agent prompts list`
+
+List prompt versions. With a node name, show its full version history; without one, show every
+prompted node's currently active version.
+
+| Argument | Description |
+|---|---|
+| `NODE` | *(optional)* `planner`, `executor`, `analyzer`, `triage`, or `codegen`. Omit to list all. |
+
+```bash
+qa-agent prompts list
+qa-agent prompts list planner
+```
+
+## `qa-agent prompts show`
+
+Print the full prompt content for a node -- the active version by default, or a specific one.
+
+| Argument/Flag | Description |
+|---|---|
+| `NODE` | *(required)* `planner`, `executor`, `analyzer`, `triage`, or `codegen`. |
+| `--version` | Show a specific version instead of the active one. |
+
+```bash
+qa-agent prompts show planner
+qa-agent prompts show planner --version 2
+```
+
+## `qa-agent prompts set`
+
+Create a new prompt version for a node (append-only history -- never overwrites or deletes).
+
+| Argument/Flag | Default | Description |
+|---|---|---|
+| `NODE` | *(required)* | `planner`, `executor`, `analyzer`, `triage`, or `codegen`. |
+| `CONTENT` | *(required)* | New prompt text, or a path to a file containing it. |
+| `--source` | `manual` | Who/what produced this version (e.g. `manual`, `rl`). |
+| `--activate` / `--no-activate` | `--activate` | Activate this version immediately. |
+
+```bash
+qa-agent prompts set planner "You are a meticulous QA test planner..."
+qa-agent prompts set planner ./prompts/planner_v3.txt --no-activate
+```
+
+Exit code: `1` with a red error message if the prompts DB isn't configured, or `NODE` is unknown.
+
+## `qa-agent prompts activate`
+
+Activate a previously stored prompt version for a node.
+
+```bash
+qa-agent prompts activate planner 2
+```
+
+Exit code: `1` if the version doesn't exist for that node, or the prompts DB isn't configured.
+
+## `qa-agent prompts revert`
+
+Revert a node to its hardcoded default prompt (deactivates the stored version; history is kept).
+
+```bash
+qa-agent prompts revert planner
+```
+
+See [docs/prompts.md](prompts.md) for the schema, versioning model, and how an external
+reinforcement-learning process can read/write these the same way.
+
 ## `qa-agent db-init`
 
-Explicitly (re-)create the `qa_logs`/`qa_config` schemas.
+Explicitly (re-)create the `qa_logs`/`qa_config` schemas (the latter includes `prompt_versions`).
 
-Not required for normal use -- `ConfigService`/`LogService` ensure their own schema automatically
-on first connect -- but useful for decoupling ops/CI setup from a first `qa-agent run`/
-`config set`. Prints a per-database status line; skips (with a dim message) any database whose
-connection string isn't set. See [docs/logging-and-config.md](logging-and-config.md).
+Not required for normal use -- `ConfigService`/`PromptService`/`LogService` ensure their own
+schema automatically on first connect -- but useful for decoupling ops/CI setup from a first
+`qa-agent run`/`config set`. Prints a per-database status line; skips (with a dim message) any
+database whose connection string isn't set. See [docs/logging-and-config.md](logging-and-config.md).
 
 ```bash
 qa-agent db-init
@@ -207,5 +278,7 @@ combined with a non-loopback `--host`.
 | `config set` | value stored | config DB not configured |
 | `config get` | key found | key not set (DB unreachable or just unset) |
 | `config list` | printed (even if empty) | config DB not configured |
+| `prompts set` | version created | prompts DB not configured, or unknown node |
+| `prompts activate` | version activated | version/node not found, or prompts DB not configured |
 | `db-init` | always `0` | -- |
 | `web` | server exits normally (Ctrl+C) | Flask not installed, or `--debug` with a non-loopback `--host` |

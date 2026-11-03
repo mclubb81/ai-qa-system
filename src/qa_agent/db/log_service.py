@@ -69,12 +69,19 @@ class LogService:
         llm_provider: str,
         llm_model: str,
         started_at: str,
+        prompt_versions: dict | None = None,
     ) -> None:
+        from psycopg.types.json import Json
+
         await self._execute(
-            """INSERT INTO runs (run_id, target_url, requirements_summary, llm_provider, llm_model, started_at)
-               VALUES (%s, %s, %s, %s, %s, %s)
+            """INSERT INTO runs (run_id, target_url, requirements_summary, llm_provider, llm_model,
+                                   started_at, prompt_versions)
+               VALUES (%s, %s, %s, %s, %s, %s, %s)
                ON CONFLICT (run_id) DO NOTHING""",
-            (run_id, target_url, requirements_summary, llm_provider, llm_model, started_at),
+            (
+                run_id, target_url, requirements_summary, llm_provider, llm_model, started_at,
+                Json(prompt_versions) if prompt_versions is not None else None,
+            ),
         )
 
     async def log_run_end(
@@ -120,13 +127,16 @@ class LogService:
         prompt_chars: int,
         response_chars: int,
         ok: bool = True,
+        prompt_version: int | None = None,
+        prompt_source_node: str | None = None,
     ) -> None:
         await self._execute(
             """INSERT INTO llm_calls (run_id, node_name, provider, model, started_at, finished_at,
-                                       duration_ms, prompt_chars, response_chars, ok)
-               VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s)""",
+                                       duration_ms, prompt_chars, response_chars, ok,
+                                       prompt_version, prompt_source_node)
+               VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)""",
             (run_id, node_name, provider, model, started_at, finished_at,
-             duration_ms, prompt_chars, response_chars, ok),
+             duration_ms, prompt_chars, response_chars, ok, prompt_version, prompt_source_node),
         )
 
     async def log_error(

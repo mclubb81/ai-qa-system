@@ -18,6 +18,8 @@ async def logged_llm_call(
     log_service: LogService,
     settings: Settings,
     prompt_chars: int = 0,
+    prompt_version: int | None = None,
+    prompt_source_node: str | None = None,
 ) -> Any:
     """Wrap a single LLM invocation with rate-limit enforcement plus
     duration/size logging. `call` is a zero-arg thunk so this uniformly
@@ -45,11 +47,13 @@ async def logged_llm_call(
         await log_service.log_llm_call(
             run_id, node_name, provider, model, started_at, now_iso(),
             duration_ms, prompt_chars, 0, ok=False,
+            prompt_version=prompt_version, prompt_source_node=prompt_source_node,
         )
         raise
     duration_ms = (time.monotonic() - started) * 1000
     await log_service.log_llm_call(
         run_id, node_name, provider, model, started_at, now_iso(),
         duration_ms, prompt_chars, len(str(response)), ok=True,
+        prompt_version=prompt_version, prompt_source_node=prompt_source_node,
     )
     return response

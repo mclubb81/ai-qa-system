@@ -98,3 +98,26 @@ async def test_planner_node_omits_docs_block_when_no_docs_retrieved():
 
     user_message = stub_llm.structured_llm.last_messages[1].content
     assert "retrieved" not in user_message.lower()
+
+
+async def test_planner_node_uses_custom_system_prompt():
+    canned = TestPlanResponse(test_cases=[])
+    stub_llm = _StubLLM(canned)
+    node = make_planner_node(
+        _StubModelRouter(stub_llm),
+        _DISABLED_LOG_SERVICE,
+        _SETTINGS,
+        system_prompt="CUSTOM PLANNER PROMPT",
+        prompt_version=7,
+    )
+
+    state = {
+        "run_id": "test-run",
+        "llm_provider": "groq",
+        "llm_model": "",
+        "target_url": "https://example.com",
+        "requirements_raw": "Check sign-up works",
+    }
+    await node(state)
+
+    assert stub_llm.structured_llm.last_messages[0].content == "CUSTOM PLANNER PROMPT"

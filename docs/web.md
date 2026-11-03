@@ -42,6 +42,10 @@ Open `http://127.0.0.1:5000`.
   next to each key removes its override. Dict-typed settings (`provider_limits`,
   `node_candidate_providers`, etc.) are edited as raw JSON; invalid JSON is flagged and that one
   field is skipped, not the whole save.
+- **Prompts** (`/prompts`, `/prompts/<node>`) -- view and version each agent node's system prompt,
+  mirroring `qa-agent prompts list/show/set/activate/revert`. Same read-only-when-unconfigured
+  pattern as Config. See [docs/prompts.md](prompts.md) -- including how an external program (e.g.
+  a remote RL loop) can also write new versions here, directly via Postgres.
 
 ## How long-running work is handled
 

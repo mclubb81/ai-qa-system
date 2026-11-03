@@ -106,6 +106,11 @@ def build_graph(router, tools, rag_service, log_service, settings) -> CompiledSt
 
 ## Node-by-node reference
 
+Every node's system prompt below is a hardcoded default (`src/qa_agent/prompts/*.py`), but can
+optionally be overridden with a versioned, Postgres-backed prompt -- including by an external
+program such as a remote RL loop -- without a code change here. See
+[docs/prompts.md](prompts.md).
+
 - **Retriever** (`agents/retriever.py::make_retriever_node`) -- runs once, first. Builds a query from
   `f"{target_url}\n\n{requirements_raw}"` and calls `rag_service.retrieve_docs(query)`. Always
   returns a list (possibly empty) into `retrieved_docs`. No LLM call. See [docs/rag.md](rag.md).
@@ -189,9 +194,10 @@ work (bug repro scripts, regression scripts, re-validating them) defaults to Hug
 ## Library entrypoint (`core/session.py::run_qa_session`)
 
 Resolves effective settings (`get_effective_settings()`, see
-[docs/logging-and-config.md](logging-and-config.md)), builds a `ModelRouter`, `RagService`, and
-`LogService`, opens a `PlaywrightMCPSession`, builds the graph from the router and the session's
-tools, and runs `graph.ainvoke(initial_state, config={"recursion_limit": recursion_limit})`. An
+[docs/logging-and-config.md](logging-and-config.md)), builds a `ModelRouter`, `RagService`,
+`LogService`, and `PromptService` (see [docs/prompts.md](prompts.md)), opens a
+`PlaywrightMCPSession`, builds the graph from the router, the session's tools, and the prompt
+service, and runs `graph.ainvoke(initial_state, config={"recursion_limit": recursion_limit})`. An
 explicit `provider`/`model` argument (or the CLI's `--provider`/`--model` flags) forces the router
 onto that one provider for the whole run, taking precedence over any configured
 `node_candidate_providers`; `QAState.llm_provider`/`llm_model` still carry the initial resolution

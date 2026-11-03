@@ -16,9 +16,15 @@ from qa_agent.agents.triage import make_triage_node
 from qa_agent.agents.verifier import make_verifier_node
 from qa_agent.config import Settings
 from qa_agent.db.log_service import LogService
+from qa_agent.db.prompt_service import PromptService
 from qa_agent.graph.router import route
 from qa_agent.graph.state import NodeName, QAState
 from qa_agent.llm_router.model_router import ModelRouter
+from qa_agent.prompts.analyzer import ANALYZER_SYSTEM_PROMPT
+from qa_agent.prompts.codegen import CODEGEN_SYSTEM_PROMPT
+from qa_agent.prompts.executor import EXECUTOR_SYSTEM_PROMPT
+from qa_agent.prompts.planner import PLANNER_SYSTEM_PROMPT
+from qa_agent.prompts.triage import TRIAGE_SYSTEM_PROMPT
 from qa_agent.rag.service import RagService
 from qa_agent.report.writer import write_report
 from qa_agent.utils.ids import now_iso
@@ -70,6 +76,7 @@ def build_graph(
     tools: list[BaseTool],
     rag_service: RagService,
     log_service: LogService,
+    prompt_service: PromptService,
     settings: Settings,
 ) -> CompiledStateGraph:
     """Wire the Coordinator-routed graph.
@@ -85,22 +92,46 @@ def build_graph(
     when RAG isn't configured it just returns empty results, so the
     retriever/triage nodes need no special-casing here. Same for
     `log_service`: always real, logging is simply a no-op when unconfigured.
+
+    `prompt_service` resolves each prompted node's active DB-stored prompt
+    exactly once here (not inside each node's hot path), falling back to
+    the hardcoded `*_SYSTEM_PROMPT` default when unconfigured/no active
+    version -- same one-query-per-run tradeoff as `get_effective_settings()`
+    being deliberately uncached: a prompt change is visible on the very
+    next run without a process restart, with no added DB latency inside
+    the graph traversal itself.
     """
+    planner_prompt, planner_version = prompt_service.get_active_version("planner", PLANNER_SYSTEM_PROMPT)
+    executor_prompt, executor_version = prompt_service.get_active_version("executor", EXECUTOR_SYSTEM_PROMPT)
+    analyzer_prompt, analyzer_version = prompt_service.get_active_version("analyzer", ANALYZER_SYSTEM_PROMPT)
+    triage_prompt, triage_version = prompt_service.get_active_version("triage", TRIAGE_SYSTEM_PROMPT)
+    codegen_prompt, codegen_version = prompt_service.get_active_version("codegen", CODEGEN_SYSTEM_PROMPT)
+
     graph = StateGraph(QAState)
     graph.add_node("retriever", _with_node_logging("retriever", make_retriever_node(rag_service), log_service))
     graph.add_node(
         "planner",
-        _with_node_logging("planner", make_planner_node(router, log_service, settings), log_service),
+        _with_node_logging(
+            "planner",
+            make_planner_node(router, log_service, settings, planner_prompt, planner_version),
+            log_service,
+        ),
     )
     graph.add_node(
         "executor",
         _with_node_logging(
-            "executor", make_executor_node(router, tools, log_service, settings), log_service
+            "executor",
+            make_executor_node(router, tools, log_service, settings, executor_prompt, executor_version),
+            log_service,
         ),
     )
     graph.add_node(
         "analyzer",
-        _with_node_logging("analyzer", make_analyzer_node(router, log_service, settings), log_service),
+        _with_node_logging(
+            "analyzer",
+            make_analyzer_node(router, log_service, settings, analyzer_prompt, analyzer_version),
+            log_service,
+        ),
     )
     graph.add_node(
         "verifier",
@@ -109,12 +140,18 @@ def build_graph(
     graph.add_node(
         "triage",
         _with_node_logging(
-            "triage", make_triage_node(router, rag_service, log_service, settings), log_service
+            "triage",
+            make_triage_node(router, rag_service, log_service, settings, triage_prompt, triage_version),
+            log_service,
         ),
     )
     graph.add_node(
         "codegen",
-        _with_node_logging("codegen", make_codegen_node(router, log_service, settings), log_service),
+        _with_node_logging(
+            "codegen",
+            make_codegen_node(router, log_service, settings, codegen_prompt, codegen_version),
+            log_service,
+        ),
     )
     graph.add_node("report", _with_node_logging("report", _make_report_node(), log_service))
 
